@@ -657,4 +657,32 @@ describe IPaaS::Connector::Connection do
       expect(IPaaS::Connector::Connection.new('no-connector-uuid').helpers).to be_nil
     end
   end
+
+  # copy_connection_values seeds a Connection's name, direction and description from
+  # the incoming hash, which the designer populates from the chosen connector. So a
+  # Connection inherits connector-derived values, and any attribute it shares with
+  # Connector must validate identically — a stricter Connection rule silently rejects
+  # a value the connector allows. This guards the regression where the connector name
+  # allowed 3 characters but the connection required 4, so an auto-named "CSV"
+  # connection was rejected. See request #77484427.
+  describe 'validation parity with Connector for copied attributes' do
+    copied_attributes = [:name, :direction, :description] # mirrors copy_connection_values
+    shared_attributes = copied_attributes & IPaaS::Connector::Connector.attribute_names
+
+    it 'shares name and description with Connector (direction is connection-only)' do
+      expect(shared_attributes).to contain_exactly(:name, :description)
+    end
+
+    shared_attributes.each do |attribute|
+      it "validates #{attribute} identically to Connector" do
+        expect(validator_signatures(IPaaS::Connector::Connection, attribute))
+          .to eq(validator_signatures(IPaaS::Connector::Connector, attribute))
+      end
+    end
+
+    def validator_signatures(klass, attribute)
+      klass.validators_on(attribute).map { |validator| [validator.kind, validator.options] }
+                                    .sort_by { |kind, _options| kind.to_s }
+    end
+  end
 end

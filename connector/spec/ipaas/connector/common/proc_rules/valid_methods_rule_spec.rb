@@ -30,6 +30,7 @@ describe IPaaS::Connector::Common::ProcRules::ValidMethodsRule do
     :finish_job!,
     :backoff_if_needed,
     :parse_json_response,
+    :parse_csv,
     :psa_validate_secret,
     :psa_extract_basic_auth,
     :psa_generate_secret_for,
@@ -41,6 +42,7 @@ describe IPaaS::Connector::Common::ProcRules::ValidMethodsRule do
     :beginning_of_day,
     :since,
     :saturday?,
+    :setup_info,
   ].each do |allowed_method|
     it "allows #{allowed_method}" do
       expect { rule.validate_method(allowed_method) }.not_to raise_error

@@ -30,6 +30,10 @@ module IPaaS
         end
 
         def parse_iterations(iterations)
+          if iterations.present? && !iterations.is_a?(Array)
+            raise IPaaS::Error, "iterations must be a list. Start each iteration with '- '."
+          end
+
           Array(iterations).map { |iteration| IPaaS::TestCase::ActionIteration.parse(iteration) }
         end
       end

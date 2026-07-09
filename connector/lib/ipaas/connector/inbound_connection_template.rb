@@ -23,6 +23,7 @@ module IPaaS
       end
 
       function :validate
+      function :setup_info
       validate :validate_valid?
 
       private

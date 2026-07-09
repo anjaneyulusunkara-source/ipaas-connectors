@@ -334,7 +334,7 @@ describe IPaaS::Connector::Schema::Field do
         field.type = :any_item
         expect(field).to be_invalid
         error_msg = 'should be one of :any_..._type, :base64, :binary, :boolean, :date, :date_time, ' \
-                    ':float, :hash, :integer, :job, :nested, :recurrence, :regexp, :ruby, ' \
+                    ':float, :hash, :hashed_credential, :integer, :job, :nested, :recurrence, :regexp, :ruby, ' \
                     ':runbook, :runbook_action, :runbook_variable, ' \
                     ':schema_field, :secret_string, :string, :time, :time_of_day, :time_zone, :uri.'
         expect(field.errors[:type]).to eq([error_msg])

@@ -25,7 +25,12 @@ module IPaaS
         private
 
         def copy_trigger_values(obj, hash)
-          obj.mocked_output = Array(hash[:mocked_output]).map do |m|
+          mocked_output = hash[:mocked_output]
+          if mocked_output.present? && !mocked_output.is_a?(Array)
+            raise IPaaS::Error, "mocked_output must be a list. Start each field with '- field_id:'."
+          end
+
+          obj.mocked_output = Array(mocked_output).map do |m|
             IPaaS::Connector::Mapping::FieldMapping.parse(m)
           end
           obj.mocked_job_context_identifier = hash[:mocked_job_context_identifier]&.to_s.presence

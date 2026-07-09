@@ -27,6 +27,13 @@ RSpec.describe IPaaS::TestCase::Trigger do
       end.to raise_error(IPaaS::Error, 'Trigger must be a hash.')
     end
 
+    it 'fails with a clear message when mocked_output is not a list' do
+      trigger = { mocked_output: { field_id: :method, fixed: 'GET' } }
+      expect do
+        IPaaS::TestCase::Trigger.parse(trigger)
+      end.to raise_error(IPaaS::Error, "mocked_output must be a list. Start each field with '- field_id:'.")
+    end
+
     it 'parses a trigger with mocked job context identifier' do
       trigger = {
         mocked_output: [

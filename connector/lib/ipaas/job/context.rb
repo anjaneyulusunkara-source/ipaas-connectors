@@ -32,10 +32,31 @@ module IPaaS
         Set.new
       end
 
-      def self.extension(extension_class)
-        extensions << extension_class
-        inclusions.each do |inclusion|
-          inclusion.send(:include, extension_class)
+      class << self
+        def extension(extension_class)
+          extensions << extension_class
+          inclusions.each do |inclusion|
+            inclusion.send(:include, extension_class)
+          end
+        end
+
+        # Ambient logger consulted by authored procs when no explicit per-instance logger is
+        # set. Lets a host that shares these objects across concurrent requests route log()
+        # into a per-request sink without mutating the shared objects. Reentrancy-safe.
+        def with_ambient_logger(logger)
+          # Fiber-local (Thread#[]): scopes the sink to the request's execution context, so
+          # concurrent requests stay isolated whether the server runs them on separate threads
+          # or multiplexes them as fibers on shared threads (a thread-local would leak across
+          # fibers sharing a thread). Consistent with other Thread#[] execution state here.
+          prev = Thread.current[:ipaas_authored_logger]
+          Thread.current[:ipaas_authored_logger] = logger
+          yield
+        ensure
+          Thread.current[:ipaas_authored_logger] = prev
+        end
+
+        def ambient_logger
+          Thread.current[:ipaas_authored_logger]
         end
       end
 
@@ -93,15 +114,22 @@ module IPaaS
 
         private
 
+        # Precedence: explicit per-instance logger > ambient sink > process default.
+        # The ambient logger is re-read each call so it is never stale-memoized;
+        # the default is memoized in a separate ivar so falling back to it never populates
+        # @logger and thus never shadows an ambient logger installed afterwards.
         def logger
-          @logger ||=
-            if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-              Rails.logger
-            elsif IPaaS.env == 'test'
-              test_logger
-            else
-              Logger.new($stdout)
-            end
+          @logger || IPaaS::Job::Context.ambient_logger || (@default_logger ||= build_default_logger)
+        end
+
+        def build_default_logger
+          if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+            Rails.logger
+          elsif IPaaS.env == 'test'
+            test_logger
+          else
+            Logger.new($stdout)
+          end
         end
 
         def interpolate(message, interpolation)

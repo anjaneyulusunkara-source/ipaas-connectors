@@ -1,7 +1,7 @@
 module IPaaS
   module Connector
     class EnvironmentVariable
-      TYPES = [:string, :secret_string].freeze
+      TYPES = [:string, :secret_string, :hashed_credential].freeze
 
       include IPaaS::Connector::Common::Model
       include IPaaS::Connector::Common::UuidMixin

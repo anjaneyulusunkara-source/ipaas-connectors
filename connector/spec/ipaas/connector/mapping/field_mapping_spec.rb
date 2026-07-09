@@ -31,6 +31,20 @@ describe IPaaS::Connector::Mapping::FieldMapping do
         field_mapping = IPaaS::Connector::Mapping::FieldMapping.parse(field)
         expect(field_mapping.to_h_ref).to eq(field)
       end
+
+      it 'should coerce a non-string field_id to a symbol instead of raising' do
+        integer_field_id = described_class.parse({ field_id: 5, fixed: 'x' }).field_id
+        expect(integer_field_id).to be_a(Symbol)
+        expect(integer_field_id.to_s).to eq('5')
+
+        boolean_field_id = described_class.parse({ field_id: true, fixed: 'x' }).field_id
+        expect(boolean_field_id).to be_a(Symbol)
+        expect(boolean_field_id.to_s).to eq('true')
+      end
+
+      it 'should treat a blank field_id as nil' do
+        expect(described_class.parse({ field_id: '', fixed: 'x' }).field_id).to be_nil
+      end
     end
 
     context 'multiple fields' do

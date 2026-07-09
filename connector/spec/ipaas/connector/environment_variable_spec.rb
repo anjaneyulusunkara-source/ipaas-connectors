@@ -40,9 +40,14 @@ describe IPaaS::Connector::EnvironmentVariable do
     it 'should validate the type' do
       string_env.type = :not_valid
       expect(string_env).not_to be_valid
-      expect(string_env.errors[:type]).to include('must be one of: string, secret_string')
+      expect(string_env.errors[:type]).to include('must be one of: string, secret_string, hashed_credential')
 
       string_env.type = 'secret_string'
+      expect(string_env).to be_valid
+    end
+
+    it 'should accept the hashed_credential type' do
+      string_env.type = 'hashed_credential'
       expect(string_env).to be_valid
     end
   end

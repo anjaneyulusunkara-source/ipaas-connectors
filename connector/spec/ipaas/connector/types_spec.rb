@@ -26,7 +26,8 @@ describe IPaaS::Connector::Types do
 
   it 'should return all types' do
     expect(subject.all).to be_a_kind_of(Hash)
-    expect(subject.all.keys.sort).to eq([:any, :base64, :binary, :boolean, :date, :date_time, :float, :hash, :integer,
+    expect(subject.all.keys.sort).to eq([:any, :base64, :binary, :boolean, :date, :date_time, :float, :hash,
+                                         :hashed_credential, :integer,
                                          :job, :nested, :recurrence, :regexp, :ruby,
                                          :runbook, :runbook_action, :runbook_variable, :schema_field,
                                          :secret_string, :string, :time, :time_of_day, :time_zone, :uri,])
@@ -40,6 +41,11 @@ describe IPaaS::Connector::Types do
     # checked in IPaaS::Connector::Mapping::ResolvedMapping#validate_type_def_type
 
     subject.all.each do |key, type_class|
+      # hashed_credential's example is a display placeholder ({salt/hash} of '…'),
+      # and resolve never derives — so it intentionally does not resolve to its
+      # ruby_class (see hashed_credential_type_spec for its resolve/valid? contract).
+      next if key == :hashed_credential
+
       field = IPaaS::Connector::Schema::Field.new(id: :foo, label: 'Foo', type: key)
       resolved_value = type_class.resolve(type_class.example(field))
       if resolved_value.present?

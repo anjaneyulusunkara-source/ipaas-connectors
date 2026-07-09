@@ -40,7 +40,7 @@ module IPaaS
           [:fixed, :proc, :negated, :failure_message].each do |attr|
             obj.send("#{attr}=", hash[attr])
           end
-          obj.field_id = hash[:field_id]&.to_sym
+          obj.field_id = hash[:field_id]&.to_s&.presence&.to_sym
           obj.matcher = hash[:matcher]&.to_sym || :equals
         end
 

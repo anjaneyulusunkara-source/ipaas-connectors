@@ -6,6 +6,7 @@ module IPaaS
       class Decryption < Base; end
       class Encryption < Base; end
       class EncryptedContentIntegrity < Base; end
+      class InvalidHashedCredential < Base; end
       # class Configuration < Base; end
       # class ForbiddenClass < Base; end
     end

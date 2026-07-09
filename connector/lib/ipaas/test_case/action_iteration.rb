@@ -19,8 +19,9 @@ module IPaaS
         def parse(hash)
           new.tap do |iteration|
             attribute_names.each do |attribute_name|
-              parsed_value = send("parse_#{attribute_name}", hash[attribute_name])
-              iteration.send("#{attribute_name}=", parsed_value)
+              value = hash[attribute_name]
+              ensure_list!(attribute_name, value)
+              iteration.send("#{attribute_name}=", send("parse_#{attribute_name}", value))
             end
           end
         end
@@ -49,6 +50,14 @@ module IPaaS
 
         def parse_iteration_state_expectations(expectations)
           Array(expectations).map { |input| IPaaS::TestCase::Expectation.parse(input) }
+        end
+
+        private
+
+        def ensure_list!(attribute_name, value)
+          return unless value.present? && !value.is_a?(Array)
+
+          raise IPaaS::Error, "#{attribute_name} must be a list. Start each entry with '- '."
         end
       end
 

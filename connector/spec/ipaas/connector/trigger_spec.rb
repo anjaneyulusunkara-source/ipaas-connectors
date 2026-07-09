@@ -368,6 +368,68 @@ describe IPaaS::Connector::Trigger do
       end
     end
 
+    context 'ambient author logging' do
+      let(:sink) { spy('ambient sink') }
+
+      it 'routes the parse proc log() to the ambient logger' do
+        request = request_double(params: { foo: 'barbie', bar: { baz: 'qux' } })
+
+        IPaaS::Job::Context.with_ambient_logger(sink) do
+          trigger.parse_request(request)
+        end
+
+        expect(sink).to have_received(:info).with('Parse called with ')
+      end
+
+      it "routes the inbound connection validate proc's discard_trigger_event! to the ambient logger" do
+        request = request_double(params: { foo: 'not barbie' })
+
+        IPaaS::Job::Context.with_ambient_logger(sink) do
+          expect { trigger.parse_request(request) }
+            .to raise_error(IPaaS::Job::DiscardTriggerEvent, "Request param 'foo' should equal 'barbie'")
+        end
+
+        expect(sink).to have_received(:info).with("Request param 'foo' should equal 'barbie'")
+      end
+
+      it 'routes the respond_with proc log() to the ambient logger' do
+        request = request_double(params: { foo: 'not barbie' })
+        trigger.runbook.store_trigger_output({ abc: :foo })
+
+        IPaaS::Job::Context.with_ambient_logger(sink) do
+          trigger.respond_with(request, double(uuid: 2), { 'default-header': 'v' })
+        end
+
+        expect(sink).to have_received(:info).with('trigger template respond_with: beetroot')
+      end
+
+      it 'does not route to the sink outside the ambient block' do
+        request = request_double(params: { foo: 'barbie', bar: { baz: 'qux' } })
+
+        expect_any_instance_of(Logger).to receive(:info).with('Parse called with ')
+        trigger.parse_request(request)
+
+        expect(sink).not_to have_received(:info)
+      end
+
+      it 'keeps two sequential ambient scopes isolated on one reused object' do
+        first = spy('request A sink')
+        second = spy('request B sink')
+
+        IPaaS::Job::Context.with_ambient_logger(first) do
+          trigger.parse_request(request_double(params: { foo: 'barbie', bar: { baz: 'qux' } }))
+        end
+        expect do
+          IPaaS::Job::Context.with_ambient_logger(second) do
+            trigger.parse_request(request_double(params: { foo: 'ken', bar: { baz: 'qux' } }))
+          end
+        end.to raise_error(IPaaS::Job::DiscardTriggerEvent)
+
+        expect(first).to have_received(:info).with(/\AParse called with/).once
+        expect(second).to have_received(:info).with("Request param 'foo' should equal 'barbie'").once
+      end
+    end
+
     context 'provision' do
       it 'should delegate provision to the trigger template' do
         logs = []

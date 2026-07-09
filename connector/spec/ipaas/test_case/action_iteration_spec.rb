@@ -1,6 +1,28 @@
 require 'spec_helper'
 
 RSpec.describe IPaaS::TestCase::ActionIteration do
+  describe '#parse' do
+    described_class.attribute_names.each do |attribute_name|
+      it "fails with a clear message when #{attribute_name} is a map instead of a list" do
+        hash = { attribute_name => { field_id: :method, fixed: 'GET' } }
+        expect do
+          described_class.parse(hash)
+        end.to raise_error(IPaaS::Error, "#{attribute_name} must be a list. Start each entry with '- '.")
+      end
+    end
+
+    it 'parses a list-valued key without raising' do
+      hash = { input_expectations: [{ field_id: :method, matcher: :equals, fixed: 'GET' }] }
+      obj = described_class.parse(hash)
+      expect(obj.input_expectations.size).to eq(1)
+    end
+
+    it 'treats a blank key as an empty list' do
+      obj = described_class.parse({ input_expectations: nil })
+      expect(obj.input_expectations).to eq([])
+    end
+  end
+
   describe 'validations' do
     it 'validates input expectations' do
       hash = {

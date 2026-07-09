@@ -293,6 +293,18 @@ RSpec.describe IPaaS::TestCase::Expectation do
     expect(expectation.match(nil, 'Baz')).not_to be_empty
   end
 
+  it 'coerces a non-string field_id to a symbol instead of raising' do
+    expectation = described_class.parse({ field_id: 42, matcher: :equals, fixed: 'Bar' })
+
+    expect(expectation.field_id).to eq(:'42')
+  end
+
+  it 'treats a blank field_id as none so the whole value is matched' do
+    expectation = described_class.parse({ field_id: '', matcher: :equals, fixed: 'Bar' })
+
+    expect(expectation.field_id).to be_nil
+  end
+
   describe '#update_runbook_variable' do
     it 'updates runbook variable in proc and nested expectations' do
       hash = {

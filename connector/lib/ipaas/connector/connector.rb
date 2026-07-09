@@ -24,7 +24,7 @@ module IPaaS
       include IPaaS::Connector::Dsl::HelpersMixin
 
       attribute :version # source file hash
-      attribute :name, required: true, length: { in: 4..120 }
+      attribute :name, required: true, length: { in: 3..120 }
       attribute :avatar, format: { with: IPaaS::Connector::Types::AVATAR_REGEXP }
       attribute :description
 

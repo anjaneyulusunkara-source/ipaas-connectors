@@ -8,11 +8,12 @@ class JsonEndpointConnector < IPaaS::Connector::Definition
 
       ## Prerequisites
       - A Xurrent iPaaS trigger URL. The platform generates one when you install this trigger in a runbook and shows it in the install view.
-      - API key or HTTP Basic Auth credentials for the caller. Populate whichever method the calling system supports. You can configure both on the same connection. Leave a method blank to disable it.
+      - API key, HTTP Basic Auth, or OAuth 2.0 client-credentials credentials for the caller. Populate whichever method the calling system supports. You can configure any combination on the same connection. Leave a method blank to disable it.
+      - For OAuth 2.0: the token URL to exchange credentials for a bearer token. The platform shows it in the install view after you save the connection.
       - A caller system able to send JSON `POST` requests to the trigger URL over HTTPS.
 
       ## Authentication
-      Every inbound request must authenticate with **API key** or **Basic Auth**. Populate whichever method the calling system supports. You can configure both on one connection; the validator skips any method you leave blank.
+      Every inbound request must authenticate with **API key**, **Basic Auth**, or **OAuth 2.0 client credentials**. Populate whichever method the calling system supports. You can configure any combination on one connection; the validator skips any method you leave blank.
 
       ### API key
 
@@ -29,13 +30,23 @@ class JsonEndpointConnector < IPaaS::Connector::Definition
       | `username` | String | Yes | Expected Basic Auth username |
       | `password` | Secret | Yes | Expected Basic Auth password. The caller sends it as `Authorization: Basic <base64(user:pass)>` per RFC 7617 |
 
+      ### OAuth 2.0 client credentials
+
+      | Field | Type | Required | Default | Description |
+      |---|---|---|---|---|
+      | `client_id` | String | Yes | - | Client identifier issued to the caller |
+      | `client_secret` | Secret | Yes | - | Client secret paired with `client_id`. Stored as a non-reversible credential |
+      | `token_ttl_seconds` | Integer | No | Server default | Lifetime of an issued bearer token, in seconds (60–86400) |
+
+      The caller exchanges its `client_id` and `client_secret` at the token URL — shown in the install view after you save the connection — for a short-lived bearer token (per RFC 6749 §4.4). It then sends that token on each request as `Authorization: Bearer <token>`. Tokens are self-contained JWTs verified per RFC 9068. Configure this method only when the calling system speaks the OAuth 2.0 client-credentials grant; leave it blank otherwise and the validator skips it.
+
       ## Triggers
 
       ### JSON Endpoint
 
       Exposes a single HTTPS `POST` endpoint that the caller invokes with a JSON body. The trigger parses the body against the configured `body_schema`, extracts any declared headers, reads an optional trailing path segment as `url_postfix`, captures any query-string parameters, and emits a structured payload to the runbook.
 
-      **Use case**: receive webhook callbacks from any system that can POST JSON with an API key or Basic Auth. Common callers include monitoring tools, ITSM platforms, and custom integrations with no dedicated connector.
+      **Use case**: receive webhook callbacks from any system that can POST JSON with an API key, Basic Auth, or an OAuth 2.0 bearer token. Common callers include monitoring tools, ITSM platforms, and custom integrations with no dedicated connector.
 
       #### Input Parameters
 
@@ -99,6 +110,16 @@ class JsonEndpointConnector < IPaaS::Connector::Definition
         -d '{ "event_type": "alert.created", "data": { "message": "threshold exceeded" } }'
       ```
 
+      Sample incoming request, OAuth 2.0 client-credentials variant (exchange credentials at the token URL first, then send the bearer):
+
+      ```sh
+      curl -X POST 'https://<your-ipaas-host>/inbound/<account_id>/<solution_uuid>/<runbook_uuid>' \
+        -H 'Authorization: Bearer <access-token>' \
+        -H 'X-Request-Id: 8b4e1c2f' \
+        -H 'Content-Type: application/json' \
+        -d '{ "event_type": "alert.created", "data": { "message": "threshold exceeded" } }'
+      ```
+
       #### Output
 
       | Field | Type | Description |
@@ -137,6 +158,7 @@ class JsonEndpointConnector < IPaaS::Connector::Definition
       |---|---|
       | Missing or mismatched API-key value | `Invalid or missing API key.` |
       | Missing or mismatched Basic Auth credentials | `Invalid basic authentication header.` |
+      | Missing, expired, or invalid OAuth 2.0 bearer token | `Invalid or missing bearer token.` |
       | Body is missing a field declared required in `body_schema`, or a field has the wrong type | `Output invalid: <details>` |
       | A header declared `required: true` is absent from the request | `Output invalid: <details>` |
 
@@ -154,22 +176,26 @@ class JsonEndpointConnector < IPaaS::Connector::Definition
       - If multiple callers share one endpoint, give each a distinct Basic Auth `username`/`password` pair (or distinct API-key value) so request logs and audit trails distinguish them.
       - Branch on `body.event_type` or `url_postfix` inside the runbook rather than standing up one trigger per event type. Fewer endpoints means fewer credentials to rotate.
       - Pair with the **Ruby** connector when downstream actions need a reshaped or validated version of the incoming body.
-      - Review and rotate API-key and Basic Auth credentials whenever the set of caller systems changes.
+      - Review and rotate API-key, Basic Auth, and OAuth 2.0 client-credentials whenever the set of caller systems changes.
+      - Prefer OAuth 2.0 client credentials for callers that support it: the endpoint sees only short-lived bearer tokens, and the stored client secret is non-reversible.
 
       ## Common Use Cases
       - **Monitoring alerts**: receive events from any monitoring tool that can POST JSON, then branch on `body.event_type` to fan out to different incident-creation runbooks.
       - **ITSM webhooks**: accept ticket or change callbacks from third-party ITSM platforms with vendor-specific payloads by declaring each vendor's fields in `body_schema`.
-      - **Integration callbacks**: wire up any app that can POST JSON with Basic Auth or an API key, even for apps with no dedicated connector.
+      - **Integration callbacks**: wire up any app that can POST JSON with an API key, Basic Auth, or OAuth 2.0 client credentials, even for apps with no dedicated connector.
       - **Request/response bridges**: pair this inbound trigger with the outbound **HTTP** connector to accept requests in one payload shape and forward them in another.
 
       ## References
+      - [RFC 6749: The OAuth 2.0 Authorization Framework](https://www.rfc-editor.org/rfc/rfc6749)
       - [RFC 7617: HTTP Basic Authentication](https://www.rfc-editor.org/rfc/rfc7617)
       - [RFC 8259: JSON Data Interchange Format](https://www.rfc-editor.org/rfc/rfc8259)
+      - [RFC 9068: JWT Profile for OAuth 2.0 Access Tokens](https://www.rfc-editor.org/rfc/rfc9068)
     END_OF_DESCRIPTION
 
     inbound_connection do
       api_key_validator
       basic_auth_validator
+      oauth2_client_credentials_validator
     end
 
     trigger 'c23047dd-eb10-42b4-a67d-6ea6c58e3958' do
@@ -178,7 +204,7 @@ class JsonEndpointConnector < IPaaS::Connector::Definition
       description <<~'END_OF_DESCRIPTION'
         Exposes a single HTTPS `POST` endpoint that the caller invokes with a JSON body. The trigger parses the body against the configured `body_schema`, extracts any declared headers, reads an optional trailing path segment as `url_postfix`, captures any query-string parameters, and emits a structured payload to the runbook.
 
-        **Use case**: receive webhook callbacks from any system that can POST JSON with an API key or Basic Auth. Common callers include monitoring tools, ITSM platforms, and custom integrations with no dedicated connector.
+        **Use case**: receive webhook callbacks from any system that can POST JSON with an API key, Basic Auth, or an OAuth 2.0 bearer token. Common callers include monitoring tools, ITSM platforms, and custom integrations with no dedicated connector.
 
         ### Input Parameters
 

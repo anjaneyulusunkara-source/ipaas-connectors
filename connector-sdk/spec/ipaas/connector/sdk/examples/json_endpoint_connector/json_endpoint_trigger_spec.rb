@@ -36,12 +36,9 @@ describe 'JSON Endpoint Trigger', :trigger do
 
   context 'inbound connection' do
     context 'config' do
-      it 'should allow API key validation' do
-        expect(connector.inbound_connection.validators).to include(:api_key)
-      end
-
-      it 'should allow basic auth validation' do
-        expect(connector.inbound_connection.validators).to include(:basic_auth)
+      it 'should allow API key, basic auth, and OAuth 2.0 client-credentials validation' do
+        expect(connector.inbound_connection.validators)
+          .to include(:api_key, :basic_auth, :oauth2_client_credentials)
       end
     end
 

@@ -150,7 +150,7 @@ module IPaaS
           private
 
           def copy_field_mapping_values(field_mapping, hash)
-            field_mapping.field_id = hash[:field_id]&.to_sym
+            field_mapping.field_id = hash[:field_id]&.to_s&.presence&.to_sym
             field_mapping.nested = parse(hash[:nested]) if hash[:nested].present?
             [:fixed, :proc, :variable, :runbook_variable].each do |key|
               field_mapping.send(:"#{key}=", hash[key])

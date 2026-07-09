@@ -25,6 +25,7 @@ Gem::Specification.new do |s|
 
   s.add_dependency 'activemodel', '>= 8.1', '< 8.2'
   s.add_dependency 'activesupport', '>= 8.1', '< 8.2'
+  s.add_dependency 'csv', '>= 3.3'
   s.add_dependency 'faraday', '>= 2.10.0'
   s.add_dependency 'faraday-multipart', '>= 1.1.1'
   s.add_dependency 'jwt', '>= 2.9.3'

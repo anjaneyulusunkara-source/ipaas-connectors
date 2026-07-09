@@ -118,6 +118,13 @@ RSpec.describe IPaaS::TestCase::Action do
         IPaaS::TestCase::Action.parse([{ reference: 'my-action' }])
       end.to raise_error(IPaaS::Error, 'Action must be a hash.')
     end
+
+    it 'fails with a clear message when iterations is a map instead of a list' do
+      action = { reference: 'my-action', iterations: { input_expectations: [] } }
+      expect do
+        described_class.parse(action)
+      end.to raise_error(IPaaS::Error, "iterations must be a list. Start each iteration with '- '.")
+    end
   end
 
   describe 'validations' do

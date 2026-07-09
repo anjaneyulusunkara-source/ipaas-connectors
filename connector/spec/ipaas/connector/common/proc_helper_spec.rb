@@ -244,31 +244,15 @@ describe IPaaS::Connector::Common::ProcHelper do
     end
 
     describe 'access to classes with uppercase names' do
-      before(:all) do
-        module A
-          class DATA
-            def self.values
-              {}
-            end
-          end
-        end
-
-        class DATA
-          def self.values
-            {}
-          end
-        end
-      end
-
-      after(:all) do
-        A.send(:remove_const, :DATA)
-        Object.send(:remove_const, :A)
-        Object.send(:remove_const, :DATA)
-      end
-
-      it 'should allow access when nested in a module' do
+      # A namespaced constant named after a Ruby global is blocked too: a scope such as `URI::` can
+      # resolve `URI::DATA` to the top-level global, and static analysis cannot tell that apart from
+      # a genuine `A::DATA`, so the rule blocks by name (only ALLOWED_CONST_PATHS are exempt).
+      it 'should not allow access when nested in a module' do
         helper = IPaaS::Connector::Common::ProcHelper.new(Object.new, 'A::DATA.values.keys')
-        expect(helper.execute).to eq([])
+        expect do
+          helper.execute
+        end.to raise_error(IPaaS::Connector::Common::ProcHelper::InvalidProcCalled,
+                           %(["Calling methods on 'DATA' not allowed."]))
       end
 
       it 'should not allow access at top level' do

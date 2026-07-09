@@ -7,6 +7,7 @@ module IPaaS
           NoGlobalAccessRule,
           NoMethodDefRule,
           NoExecRule,
+          NoRescueExceptionRule,
           ValidMethodsRule,
         ].freeze
 

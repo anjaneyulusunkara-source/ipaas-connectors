@@ -34,6 +34,113 @@ describe IPaaS::Job::Context do
     end
   end
 
+  describe 'log routing precedence' do
+    let(:sink) { spy('ambient sink') }
+
+    it 'routes log to the ambient logger when no explicit logger is set' do
+      IPaaS::Job::Context.with_ambient_logger(sink) do
+        context.log('inside the window')
+      end
+
+      expect(sink).to have_received(:info).with('inside the window')
+    end
+
+    it 'falls back to the default logger outside the ambient window' do
+      expect_any_instance_of(Logger).to receive(:info).with('outside the window')
+
+      context.log('outside the window')
+
+      expect(sink).not_to have_received(:info)
+    end
+
+    it 'prefers an explicitly assigned logger over the ambient logger' do
+      explicit = spy('explicit logger')
+      context.logger = explicit
+
+      IPaaS::Job::Context.with_ambient_logger(sink) do
+        context.log('to explicit')
+      end
+
+      expect(explicit).to have_received(:info).with('to explicit')
+      expect(sink).not_to have_received(:info)
+    end
+
+    it 'consults an ambient logger installed after an earlier default-routed call' do
+      # Guards the @default_logger split: an earlier default-routed call must not pin
+      # the default into @logger and shadow an ambient logger installed afterwards.
+      expect_any_instance_of(Logger).to receive(:info).with('before window')
+      context.log('before window')
+
+      IPaaS::Job::Context.with_ambient_logger(sink) do
+        context.log('inside window')
+      end
+
+      expect(sink).to have_received(:info).with('inside window')
+    end
+  end
+
+  describe '.with_ambient_logger' do
+    let(:sink) { spy('ambient sink') }
+
+    it 'exposes the installed logger to ambient_logger within the block' do
+      IPaaS::Job::Context.with_ambient_logger(sink) do
+        expect(IPaaS::Job::Context.ambient_logger).to be(sink)
+      end
+    end
+
+    it 'restores the previous ambient logger after the block' do
+      expect(IPaaS::Job::Context.ambient_logger).to be_nil
+
+      IPaaS::Job::Context.with_ambient_logger(sink) {}
+
+      expect(IPaaS::Job::Context.ambient_logger).to be_nil
+    end
+
+    it 'restores the previous ambient logger even when the block raises' do
+      boom = Class.new(StandardError)
+
+      expect do
+        IPaaS::Job::Context.with_ambient_logger(sink) { raise boom, 'boom' }
+      end.to raise_error(boom)
+
+      expect(IPaaS::Job::Context.ambient_logger).to be_nil
+    end
+
+    it 'restores the outer logger when a nested block exits' do
+      outer = spy('outer')
+      inner = spy('inner')
+
+      IPaaS::Job::Context.with_ambient_logger(outer) do
+        IPaaS::Job::Context.with_ambient_logger(inner) do
+          expect(IPaaS::Job::Context.ambient_logger).to be(inner)
+        end
+        expect(IPaaS::Job::Context.ambient_logger).to be(outer)
+      end
+    end
+
+    it 'does not leak the ambient logger to other threads' do
+      seen_in_other_thread = :unset
+
+      IPaaS::Job::Context.with_ambient_logger(sink) do
+        seen_in_other_thread = Thread.new { IPaaS::Job::Context.ambient_logger }.value
+      end
+
+      expect(seen_in_other_thread).to be_nil
+    end
+
+    it 'isolates the ambient logger per fiber so concurrent request fibers stay separate' do
+      # Fiber-local storage: a separate fiber does not see this fiber's sink. This is what
+      # keeps requests isolated on a server that multiplexes them as fibers on shared threads.
+      seen_in_other_fiber = :unset
+
+      IPaaS::Job::Context.with_ambient_logger(sink) do
+        seen_in_other_fiber = Fiber.new { IPaaS::Job::Context.ambient_logger }.resume
+      end
+
+      expect(seen_in_other_fiber).to be_nil
+    end
+  end
+
   describe 'discard_trigger_event!' do
     it 'should log an info message and raise an exception' do
       expect_any_instance_of(Logger).to receive(:info).with('foo')

@@ -16,7 +16,7 @@ module IPaaS
       include IPaaS::Job::Context
 
       attribute :version # GIT commit ID
-      attribute :name, required: true, length: { in: 4..120 }
+      attribute :name, required: true, length: { in: 3..120 }
       attribute :direction, required: true, type: Symbol
       attribute :description
       attribute :connector, type: Connector
@@ -121,9 +121,9 @@ module IPaaS
       end
 
       def setup_info
-        return unless outbound? && connection_definition
-
-        connection_definition.call_function(:setup_info, self)
+        return unless connection_definition
+        return outbound_setup_info if outbound?
+        inbound_setup_info if inbound?
       end
 
       def config_tester
@@ -155,6 +155,25 @@ module IPaaS
       end
 
       private
+
+      def outbound_setup_info
+        connection_definition.call_function(:setup_info, self)
+      end
+
+      # Inbound setup_info aggregates each validator's setup_info block plus any
+      # template-level setup_info function. Validators returning nil are skipped.
+      def inbound_setup_info
+        sections = connection_definition.validators.filter_map do |validator|
+          IPaaS::Connector::Authentication::Inbound.module(validator).setup_info_for(self)
+        end
+
+        template_section = connection_definition.call_function(:setup_info, self)
+        sections << template_section if template_section
+
+        return nil if sections.empty?
+
+        sections.reduce({}) { |acc, section| acc.merge(section) }
+      end
 
       def config_tester_timeout?(error)
         return true if error.is_a?(Timeout::Error) || error.is_a?(Faraday::TimeoutError)
