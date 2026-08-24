@@ -153,8 +153,8 @@ class XurrentConnector < IPaaS::Connector::Definition
       GqlArtifactCache.gql_read_root_options(helpers.schema_cache_store, operation)
     end
 
-    helper :write_root_options do |operation, options|
-      GqlArtifactCache.gql_write_root_options(helpers.schema_cache_store, operation, options)
+    helper :selector_notice do
+      GqlArtifactCache.gql_selector_notice(helpers.schema_cache_store, 'Xurrent')
     end
 
     # ──────────────────────────────────────────────
@@ -764,6 +764,7 @@ class XurrentConnector < IPaaS::Connector::Definition
                           else
                             helpers.read_root_options(:query) || []
                           end
+          GqlArtifactCache.gql_seed_root_options(helpers.schema_cache_store, :query, query_options)
           helpers.build_query_static_object_field(schema, query_options.presence)
 
           # Define include_fields early so its value is resolved in the first pass,
@@ -796,13 +797,12 @@ class XurrentConnector < IPaaS::Connector::Definition
            helpers.cacheable_selection?(:query) && helpers.schema_cache_read('gql_schema').present?
           schema_data = helpers.schema_cache_read('gql_schema')
           helpers.write_bundle_part(:query, 'in', helpers.build_query_in_bundle(schema_data, object_name, schema))
-          helpers.persist_root_options(schema_data, :query)
         end
       end
 
       # The object selector is static (never serialized into the bundle): the enum
       # comes from the root-field options on the warm path, the schema on a miss, or
-      # the configure-connection notice when neither is available.
+      # a notice naming why neither is available.
       helper :build_query_static_object_field do |schema, options|
         if options.present?
           schema.field :object, 'Query object', :string,
@@ -811,11 +811,9 @@ class XurrentConnector < IPaaS::Connector::Definition
         else
           schema.field :object, 'Query object', :string,
                        hint: 'The GraphQL query field name (e.g. people, requests, configurationItems).',
-                       notice: 'Outbound Connection is not configured correctly.',
-                       notice_type: 'error',
-                       notice_action: 'edit_connection',
                        pattern: /\A[A-Za-z][A-Za-z0-9]*\z/,
-                       required: true
+                       required: true,
+                       **helpers.selector_notice
         end
       end
 
@@ -1171,6 +1169,7 @@ class XurrentConnector < IPaaS::Connector::Definition
                              else
                                helpers.read_root_options(:mutation) || []
                              end
+          GqlArtifactCache.gql_seed_root_options(helpers.schema_cache_store, :mutation, mutation_options)
           helpers.build_mutation_static_field(schema, mutation_options.presence)
 
           # Define include_fields early so its value is resolved in the first pass
@@ -1197,13 +1196,12 @@ class XurrentConnector < IPaaS::Connector::Definition
           schema_data = helpers.schema_cache_read('gql_schema')
           helpers.write_bundle_part(:mutation, 'in',
                                     helpers.build_mutation_in_bundle(schema_data, mutation_name, schema))
-          helpers.persist_root_options(schema_data, :mutation)
         end
       end
 
       # The mutation selector is static (never serialized into the bundle): the enum
       # comes from the root-field options on the warm path, the schema on a miss, or
-      # the configure-connection notice when neither is available.
+      # a notice naming why neither is available.
       helper :build_mutation_static_field do |schema, options|
         if options.present?
           schema.field :mutation, 'Mutation', :string,
@@ -1212,11 +1210,9 @@ class XurrentConnector < IPaaS::Connector::Definition
         else
           schema.field :mutation, 'Mutation', :string,
                        hint: 'The GraphQL mutation name (e.g. requestCreate, personUpdate, noteCreate).',
-                       notice: 'Outbound Connection is not configured correctly.',
-                       notice_type: 'error',
-                       notice_action: 'edit_connection',
                        pattern: /\A[A-Za-z][A-Za-z0-9]*\z/,
-                       required: true
+                       required: true,
+                       **helpers.selector_notice
         end
       end
 
@@ -1551,7 +1547,13 @@ class XurrentConnector < IPaaS::Connector::Definition
         begin
           helpers.ensure_schema_cached
         rescue StandardError => e
+          # Recorded, not re-raised: this runs during a schema build, so raising would take
+          # out the whole panel. The builders surface it on the selector instead.
           log("Schema introspection failed: #{e.message}")
+          if GqlArtifactCache.gql_read_schema_error(helpers.schema_cache_store).nil?
+            GqlArtifactCache.gql_write_schema_error(helpers.schema_cache_store, e.message,
+                                                    cause: :transient)
+          end
         end
       end
       context.regenerate_schema(context.output_schema(output_schema_ref)) if action.input&.[](selection_field).present?
@@ -1572,6 +1574,7 @@ class XurrentConnector < IPaaS::Connector::Definition
       fail_job!('No schema data from introspection') if schema_data.blank?
 
       helpers.schema_cache_write('gql_schema', schema_data, 3600)
+      GqlArtifactCache.gql_clear_schema_error(helpers.schema_cache_store)
       schema_data
     end
 
@@ -1586,18 +1589,17 @@ class XurrentConnector < IPaaS::Connector::Definition
       rescue IPaaS::Job::Outbound::CustomerCredentialsError => e
         # OAuth credential rejection (401/403/known-400) raises before any GraphQL
         # response. Deterministic config failure; message is credential-free.
-        helpers.record_introspection_failure(e.message, INTROSPECTION_FAILURE_TTL)
+        helpers.record_introspection_failure(e.message, cause: :credentials)
       rescue IPaaS::Error => e
         # Other auth errors (e.g. a 5xx from the OAuth token endpoint) are transient.
-        helpers.record_introspection_failure(e.message, INTROSPECTION_TRANSIENT_FAILURE_TTL)
+        helpers.record_introspection_failure(e.message, cause: :transient)
       end
 
       if response.status != 200
         # PAT connections make no token call, so a bad credential surfaces as a non-200 response.
-        deterministic = response.status >= 400 && response.status < 500
-        ttl = deterministic ? INTROSPECTION_FAILURE_TTL : INTROSPECTION_TRANSIENT_FAILURE_TTL
         helpers.record_introspection_failure("HTTP error from Xurrent GraphQL API: #{response.status} " \
-                                             "'#{response.body}'", ttl)
+                                             "'#{response.body}'",
+                                             cause: GqlArtifactCache.gql_schema_error_cause(response.status))
       end
       helpers.extract_data_from_graphql_response(response)['__schema']
     end
@@ -1605,9 +1607,11 @@ class XurrentConnector < IPaaS::Connector::Definition
     # Writes the bounded failure message to the negative cache keyed by the auth
     # tuple and fails the job with it. The message is capped because it is
     # re-logged on every cache hit for the TTL; the message never contains credentials.
-    helper :record_introspection_failure do |message, ttl|
+    helper :record_introspection_failure do |message, cause:|
+      ttl = cause == :transient ? INTROSPECTION_TRANSIENT_FAILURE_TTL : INTROSPECTION_FAILURE_TTL
       bounded = message.to_s[0, INTROSPECTION_FAILURE_MESSAGE_LIMIT]
       helpers.schema_cache_write(helpers.introspection_failure_cache_key, bounded, ttl)
+      GqlArtifactCache.gql_write_schema_error(helpers.schema_cache_store, bounded, cause: cause)
       fail_job!(bounded)
     end
 
@@ -1652,12 +1656,6 @@ class XurrentConnector < IPaaS::Connector::Definition
         selection_name: helpers.selection_value(operation),
         include_fields: helpers.resolved_include_fields, bundle: bundle,
       )
-    end
-
-    # Records the root-field options (selector enumeration) under the current generation
-    # so the warm input-schema build restores the selector without reading the schema.
-    helper :persist_root_options do |schema_data, operation|
-      helpers.write_root_options(operation, GqlSchema.gql_list_root_fields(schema_data, operation.to_s))
     end
 
     # ──────────────────────────────────────────────

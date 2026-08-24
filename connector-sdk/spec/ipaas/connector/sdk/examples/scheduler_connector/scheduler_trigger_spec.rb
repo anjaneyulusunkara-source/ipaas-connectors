@@ -17,6 +17,32 @@ describe 'Scheduler Trigger', :trigger do
     { schedule: weekly_recurrence }
   end
 
+  let(:monthly_recurrence) do
+    {
+      frequency: 'monthly',
+      time_zone: 'UTC',
+      interval: 1,
+      day_of_month: [5],
+      time_of_day: '10:00:00',
+    }
+  end
+
+  # Request #80388755. The weekly recurrence must be resolved and held before the monthly one is
+  # parsed — that ordering is what makes this discriminating. Assert on the inner recurrence value:
+  # validating the outer mapping re-resolves :schedule and repairs the flags on the way.
+  it 'keeps a resolved recurrence isolated from a later resolve of a different frequency' do
+    held = trigger.config[:schedule]
+    expect(held).to respond_to(:fields)
+
+    IPaaS::Connector::Trigger.parse(runbook, runbook_trigger({ schedule: monthly_recurrence }))
+
+    day_of_month = held.fields.detect { |f| f.id == :day_of_month }
+    expect(held.fields.detect { |f| f.id == :day }.disabled).to be(false)
+    expect(day_of_month.disabled).to be(true)
+    expect(day_of_month.visibility).to eq('hidden')
+    expect(held.valid?).to be(true), -> { held.full_error_messages }
+  end
+
   it 'should be a valid trigger' do
     expect(trigger).to be_valid
   end

@@ -359,7 +359,7 @@ class LansweeperConnector < IPaaS::Connector::Definition
           field :body, 'Body', :string, required: true
           field :headers, 'Headers', [:nested], default: [] do
             field :name, 'Name', :string, required: true
-            field :value, 'Value', :string, required: true
+            field :value, 'Value', :string
           end
         end
         field :refresh_token, 'Refresh Token', :secret_string

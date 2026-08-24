@@ -115,133 +115,144 @@ describe IPaaS::Connector::Types::RecurrenceType do
         :frequency, :disabled, :time_zone, :interval, :time_of_day, :start_date, :end_date,
       ].freeze
 
+      # Copy-on-resolve (request #80388755): a shared value-type singleton is never mutated in
+      # place, so per-frequency field state lives on the resolved value's fields, not the schema.
       it 'should disable and hide all fields when disabled is true' do
-        schema.resolve(Object.new, [{ field_id: 'disabled', fixed: true }])
-        should_have_active_fields([:disabled])
+        resolved = schema.resolve(Object.new, [{ field_id: 'disabled', fixed: true }])
+        should_have_active_fields(resolved, [:disabled])
       end
 
       it 'should not disable required fields when frequency is daily' do
-        schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'daily' }])
+        resolved = schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'daily' }])
         expected_fields = [:frequency, :disabled, :time_zone, :interval, :time_of_day, :start_date, :end_date]
-        should_have_active_fields(expected_fields)
+        should_have_active_fields(resolved, expected_fields)
       end
 
       it 'should disable all fields except for disabled and frequency when not repeating' do
-        schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'no_repeat' }])
-        should_have_active_fields([:frequency, :disabled])
+        resolved = schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'no_repeat' }])
+        should_have_active_fields(resolved, [:frequency, :disabled])
       end
 
       it 'should enable "day" for weekly recurrence' do
-        schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'weekly' }])
-        should_have_active_fields([:day] + STANDARD_RECURRENCE_FIELDS)
+        resolved = schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'weekly' }])
+        should_have_active_fields(resolved, [:day] + STANDARD_RECURRENCE_FIELDS)
       end
 
       it 'should enable "day_of_month" for monthly recurrence' do
-        schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'monthly' }])
-        should_have_active_fields([:day_of_week, :day_of_month] + STANDARD_RECURRENCE_FIELDS)
+        resolved = schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'monthly' }])
+        should_have_active_fields(resolved, [:day_of_week, :day_of_month] + STANDARD_RECURRENCE_FIELDS)
       end
 
       it 'should enable "day_of_week_index" and "day_of_week_day" for monthly recurrence when day_of_week is true' do
-        schema.resolve(Object.new, [
+        resolved = schema.resolve(Object.new, [
           { field_id: 'frequency', fixed: 'monthly' },
           { field_id: 'day_of_week', fixed: true },
         ])
-        should_have_active_fields([:day_of_week, :day_of_week_index, :day_of_week_day] + STANDARD_RECURRENCE_FIELDS)
+        should_have_active_fields(resolved,
+                                  [:day_of_week, :day_of_week_index, :day_of_week_day] + STANDARD_RECURRENCE_FIELDS)
       end
 
       it 'should enable "month_of_year" for yearly recurrence' do
-        schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'yearly' }])
-        should_have_active_fields([:day_of_week, :month_of_year] + STANDARD_RECURRENCE_FIELDS)
+        resolved = schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'yearly' }])
+        should_have_active_fields(resolved, [:day_of_week, :month_of_year] + STANDARD_RECURRENCE_FIELDS)
       end
 
       it 'should enable "day_of_week_index" and "day_of_week_day" for yearly recurrence when day_of_week is true' do
-        schema.resolve(Object.new, [
+        resolved = schema.resolve(Object.new, [
           { field_id: 'frequency', fixed: 'yearly' },
           { field_id: 'day_of_week', fixed: true },
         ])
-        should_have_active_fields([:day_of_week, :day_of_week_index, :day_of_week_day,
-                                   :month_of_year,] + STANDARD_RECURRENCE_FIELDS)
+        should_have_active_fields(resolved, [:day_of_week, :day_of_week_index, :day_of_week_day,
+                                             :month_of_year,] + STANDARD_RECURRENCE_FIELDS)
       end
 
       it 'should not require time_of_day for hourly recurrence' do
-        schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'hourly' }])
-        expect(schema.fields.detect { |f| f.id == :time_of_day }.required).to be_falsey
+        resolved = schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'hourly' }])
+        expect(resolved_field(resolved, :time_of_day).required).to be_falsey
 
         %w[daily weekly monthly yearly].each do |frequency|
-          schema.resolve(Object.new, [{ field_id: 'frequency', fixed: frequency }])
-          expect(schema.fields.detect { |f| f.id == :time_of_day }.required).to be_truthy
+          resolved = schema.resolve(Object.new, [{ field_id: 'frequency', fixed: frequency }])
+          expect(resolved_field(resolved, :time_of_day).required).to be_truthy
         end
       end
 
       it 'bounds end_date by start_date and start_date by end_date' do
-        schema.resolve(Object.new, [
+        resolved = schema.resolve(Object.new, [
           { field_id: 'frequency', fixed: 'daily' },
           { field_id: 'start_date', fixed: '2026-06-10' },
           { field_id: 'end_date', fixed: '2026-06-20' },
         ])
 
-        expect(schema.field(:end_date).min_date).to eq('2026-06-10')
-        expect(schema.field(:start_date).max_date).to eq('2026-06-20')
+        expect(resolved_field(resolved, :end_date).min_date).to eq('2026-06-10')
+        expect(resolved_field(resolved, :start_date).max_date).to eq('2026-06-20')
       end
 
       it 'leaves date bounds unset when the sibling date is absent' do
-        schema.resolve(Object.new, [
+        resolved = schema.resolve(Object.new, [
           { field_id: 'frequency', fixed: 'daily' },
           { field_id: 'start_date', fixed: '2026-06-10' },
         ])
 
-        expect(schema.field(:end_date).min_date).to eq('2026-06-10')
-        expect(schema.field(:start_date).max_date).to be_nil
+        expect(resolved_field(resolved, :end_date).min_date).to eq('2026-06-10')
+        expect(resolved_field(resolved, :start_date).max_date).to be_nil
       end
 
-      it 'clears date bounds when the frequency is no_repeat' do
-        schema.resolve(Object.new, [
-          { field_id: 'frequency', fixed: 'daily' },
-          { field_id: 'start_date', fixed: '2026-06-10' },
-          { field_id: 'end_date', fixed: '2026-06-20' },
-        ])
-        schema.resolve(Object.new, [
+      # Pins the !no_repeat guard: without it both bounds are set from the mapped dates.
+      it 'does not set date bounds when the frequency is no_repeat' do
+        resolved = schema.resolve(Object.new, [
           { field_id: 'frequency', fixed: 'no_repeat' },
           { field_id: 'start_date', fixed: '2026-06-10' },
           { field_id: 'end_date', fixed: '2026-06-20' },
         ])
 
-        expect(schema.field(:end_date).min_date).to be_nil
-        expect(schema.field(:start_date).max_date).to be_nil
+        expect(resolved_field(resolved, :end_date).min_date).to be_nil
+        expect(resolved_field(resolved, :start_date).max_date).to be_nil
       end
 
-      def should_have_active_fields(active_field_ids)
-        expect(enabled_fields.map(&:id)).to contain_exactly(*active_field_ids)
-        expect(visible_fields.map(&:id)).to contain_exactly(*active_field_ids)
+      it 'does not mutate the shared singleton when resolving' do
+        schema.resolve(Object.new, [{ field_id: 'frequency', fixed: 'weekly' }])
+        # day_of_month is irrelevant to a weekly recurrence, so an in-place resolve would
+        # flip the singleton's copy to disabled. Assert the pristine build value (false, the
+        # DSL default) rather than a self-referential snapshot that also holds when mutated.
+        expect(schema.field(:day_of_month).disabled).to be(false)
       end
 
-      def enabled_fields
-        schema.fields.reject(&:disabled)
+      def should_have_active_fields(resolved, active_field_ids)
+        expect(enabled_fields(resolved).map(&:id)).to contain_exactly(*active_field_ids)
+        expect(visible_fields(resolved).map(&:id)).to contain_exactly(*active_field_ids)
       end
 
-      def visible_fields
-        schema.fields.select { |f| f.visibility == 'visible' }
+      def enabled_fields(resolved)
+        resolved.fields.reject(&:disabled)
+      end
+
+      def visible_fields(resolved)
+        resolved.fields.select { |f| f.visibility == 'visible' }
+      end
+
+      def resolved_field(resolved, id)
+        resolved.fields.detect { |f| f.id == id }
       end
     end
 
     context 'when a previous resolve raised an exception (regression: request #77167827)' do
-      # RecurrenceType.schema is a process-wide singleton — an exception leaking
-      # @resolving=true on it silently disables after_update for every later
-      # resolve in the same process.
+      # RecurrenceType.schema is a process-wide singleton. A raising resolve must not leave it in a
+      # state that breaks later resolves. Copy-on-resolve (#80388755) makes this structural: the
+      # singleton's @resolving/@context are never set — only the throwaway per-request copy's are.
 
       it 'still runs after_update on subsequent resolves' do
         expect { schema.resolve(Object.new, 'not a hash') }.to raise_error(IPaaS::Error)
 
-        schema.resolve(Object.new, [
+        resolved = schema.resolve(Object.new, [
           { field_id: 'frequency', fixed: 'daily' },
           { field_id: 'time_of_day', fixed: '09:00' },
         ])
 
         [:day, :day_of_month, :day_of_week_index, :day_of_week_day, :month_of_year].each do |id|
-          expect(schema.field(id).disabled).to be_truthy
+          expect(resolved.fields.detect { |f| f.id == id }.disabled).to be_truthy
         end
-        expect(schema.field(:time_zone).disabled).to be_falsey
-        expect(schema.field(:interval).disabled).to be_falsey
+        expect(resolved.fields.detect { |f| f.id == :time_zone }.disabled).to be_falsey
+        expect(resolved.fields.detect { |f| f.id == :interval }.disabled).to be_falsey
       end
     end
   end

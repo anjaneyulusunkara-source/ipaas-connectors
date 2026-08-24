@@ -7,7 +7,7 @@ module IPaaS
 
       include IPaaS::Connector::Common::Model
 
-      attr_accessor :connector, :reference
+      attr_accessor :connector, :reference, :shared
       attribute :name, length: { in: 2..120 }
 
       schema_fields
@@ -24,29 +24,36 @@ module IPaaS
       end
 
       def example
-        fields.to_h do |field|
+        fields.filter_map do |field|
+          next unless field.is_a?(Field)
+
           [field.id, field.example]
-        end
+        end.to_h
       end
 
       def resolve(context, field_mapping, &block)
-        using_context(context) do
-          was_resolving = @resolving
-          @resolving = true
-          begin
-            values = resolved_mapping(context, field_mapping)
-            safe_resolve(context, field_mapping, values, was_resolving, &block)
-          ensure
-            @resolving = was_resolving
-          end
-        end
+        # A schema marked shared is a process-global singleton (RecurrenceType): its after_update
+        # mutates fields in place and validation reads those flags live, so concurrent requests
+        # would contaminate each other. Resolve on a private copy to keep the template read-only.
+        # #80388755.
+        return deep_dup.tap { |copy| copy.shared = false }.resolve(context, field_mapping, &block) if shared?
+
+        using_context(context) { resolve_within_context(context, field_mapping, &block) }
+      end
+
+      def shared?
+        @shared == true
       end
 
       # explicitly regenerate the schema itself, e.g. when the trigger configuration is updated
       def regenerate(context, &block)
         using_context(context) do
           @regenerator ||= block
-          context.instance_exec(self, &@regenerator) if context && @regenerator
+          if context && @regenerator
+            IPaaS::Connector::Mapping::ResolvedMapping.tracking_resolution(context) do
+              context.instance_exec(self, &@regenerator)
+            end
+          end
           nil # explicit nil as to not inadvertently return move these fields to a different schema
         end
       end
@@ -75,7 +82,22 @@ module IPaaS
         fields.detect { |f| f.id.to_s == field_id.to_s }
       end
 
+      def declares_secret_string?
+        Array(fields).any? { |field| field.is_a?(Field) && field.declares_secret_string? }
+      end
+
       private
+
+      def resolve_within_context(context, field_mapping, &block)
+        was_resolving = @resolving
+        @resolving = true
+        begin
+          values = resolved_mapping(context, field_mapping)
+          safe_resolve(context, field_mapping, values, was_resolving, &block)
+        ensure
+          @resolving = was_resolving
+        end
+      end
 
       def update_values_after_update(context, field_mapping, values)
         return values unless after_update
@@ -84,7 +106,9 @@ module IPaaS
           # TODO: How to properly handle this error? It is most likely an issue in the connector itself
           on_invalid = ->(msg) { raise("Schema '#{reference}' after_update failure: #{msg}") }
           proc_helper = IPaaS::Connector::Common::ProcHelper.new(context, after_update, on_invalid: on_invalid)
-          new_fields = proc_helper.execute(self.fields, values)
+          new_fields = IPaaS::Connector::Mapping::ResolvedMapping.tracking_resolution(context) do
+            proc_helper.execute(self.fields, values)
+          end
           self.fields = new_fields if new_fields.is_a?(Array) && new_fields.all?(Field)
 
           # resolve again, fields may be updated
@@ -102,7 +126,7 @@ module IPaaS
           yield values if block_given?
           values = update_values_after_update(context, field_mapping, values) unless was_resolving
           yield values if block_given?
-        rescue StandardError => e
+        rescue StandardError, SystemStackError => e
           values.base_error = e
         end
         values

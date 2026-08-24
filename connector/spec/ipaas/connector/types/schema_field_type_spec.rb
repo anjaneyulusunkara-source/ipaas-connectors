@@ -217,9 +217,51 @@ describe IPaaS::Connector::Types::SchemaFieldType do
       expect(resolved.fields.first.id).to eq(:nr)
     end
 
-    it 'should not fail when an invalid type is provided' do
-      resolved = IPaaS::Connector::Types::SchemaFieldType.resolve('foo')
-      expect(resolved).to eq('foo')
+    it 'returns a Field unchanged' do
+      field = IPaaS::Connector::Schema::Field.new(id: :foo, label: 'Foo', type: :string)
+      expect(subject.resolve(field)).to be(field)
+    end
+
+    it 'coerces a bare string into a string field rather than leaking a raw String' do
+      resolved = subject.resolve('noteText')
+      expect(resolved).to be_a(IPaaS::Connector::Schema::Field)
+      expect(resolved.id).to eq(:noteText)
+      expect(resolved.label).to eq('noteText')
+      expect(resolved.type).to eq(:string)
+    end
+
+    it 'coerces a bare symbol into a string field' do
+      resolved = subject.resolve(:noteText)
+      expect(resolved).to be_a(IPaaS::Connector::Schema::Field)
+      expect(resolved.id).to eq(:noteText)
+      expect(resolved.label).to eq('noteText')
+      expect(resolved.type).to eq(:string)
+    end
+
+    it 'coerces bare-string entries nested under fields, preserving valid siblings' do
+      resolved = subject.resolve({
+        id: 'item', label: 'Item', type: 'nested',
+        fields: ['noteText', { id: 'price', label: 'Price', type: 'integer' }],
+      },)
+      expect(resolved.fields.length).to eq(2)
+      expect(resolved.fields[0].id).to eq(:noteText)
+      expect(resolved.fields[0].type).to eq(:string)
+      expect(resolved.fields[1].id).to eq(:price)
+      expect(resolved.fields[1].type).to eq(:integer)
+    end
+
+    it 'drops scalar entries that cannot be a field' do
+      expect(subject.resolve(42)).to be_nil
+      expect(subject.resolve(nil)).to be_nil
+    end
+
+    it 'drops blank bare scalars rather than coercing them into a phantom field' do
+      expect(subject.resolve('')).to be_nil
+      expect(subject.resolve('   ')).to be_nil
+    end
+
+    it 'passes an array through unchanged so array-field defaults resolve to the array' do
+      expect(subject.resolve([])).to eq([])
     end
 
     it 'should whitelist attribute names' do

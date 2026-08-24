@@ -58,6 +58,34 @@ describe IPaaS::Connector::Common::ProcHelper do
     end
   end
 
+  context 'recursion guard' do
+    after { Thread.current[:executing_procs] = [] }
+
+    def preload_stack(depth)
+      Thread.current[:executing_procs] =
+        Array.new(depth) { described_class.new(Object.new, "'x'") }
+    end
+
+    it 'raises a catchable RecursiveProcError once nesting reaches the limit' do
+      preload_stack(described_class::MAX_PROC_DEPTH)
+      expect { described_class.new(Object.new, "'ok'").execute }
+        .to raise_error(described_class::RecursiveProcError, /refers back to itself/)
+      expect(described_class::RecursiveProcError.ancestors).to include(StandardError)
+    end
+
+    it 'does not pop a frame it never pushed when it guards' do
+      preload_stack(described_class::MAX_PROC_DEPTH)
+      expect { described_class.new(Object.new, "'ok'").execute }
+        .to raise_error(described_class::RecursiveProcError)
+      expect(Thread.current[:executing_procs].size).to eq(described_class::MAX_PROC_DEPTH)
+    end
+
+    it 'allows nesting just below the limit' do
+      preload_stack(described_class::MAX_PROC_DEPTH - 1)
+      expect(described_class.new(Object.new, "'ok'").execute).to eq('ok')
+    end
+  end
+
   context 'proc from string' do
     it 'should execute basic proc' do
       helper = IPaaS::Connector::Common::ProcHelper.new(Object.new, "'Hello World!'")
@@ -795,6 +823,75 @@ describe IPaaS::Connector::Common::ProcHelper do
       second = -> { first }
       second.object_id
       first
+    end
+  end
+
+  context 'bare data pill interpolation (request 79269379)' do
+    it 'flags a data pill used outside a string' do
+      source = <<~'RUBY'
+        mapping = { "critical" => "top" }
+        impact = mapping[
+        #{trigger_output&.drill(:query_params)}
+        ] || "low"
+      RUBY
+      helper = described_class.new(Object.new, source)
+      expect(helper.valid?).to be(false)
+      expect(helper.errors.join("\n")).to include('outside a string')
+    end
+
+    # Pin the actionable wording so it can't silently drop again. Checks both fix paths so a
+    # refactor can't remove one without failing the test.
+    it 'includes actionable fix instructions in the error message' do
+      source = "mapping[\n\#{trigger_output}\n]"
+      helper = described_class.new(Object.new, source)
+      expect(helper.valid?).to be(false)
+      expect(helper.errors.join("\n")).to include('Remove the surrounding #{}')
+      expect(helper.errors.join("\n")).to include('double-quoted string')
+    end
+
+    # Bare pill as the ENTIRE proc: ast is nil (whole expression is a Ruby comment).
+    # This is the canonical bug shape and covers the nil-ast branch of parse_ast.
+    it 'flags a bare pill as the entire proc with exactly one error message' do
+      helper = described_class.new(Object.new, '#{trigger_output}')
+      expect(helper.valid?).to be(false)
+      expect(helper.errors.length).to eq(1)
+      expect(helper.errors.join("\n")).to include('outside a string')
+    end
+
+    it 'flags a trailing bare data pill' do
+      helper = described_class.new(Object.new, 'result = mapping #{trigger_output}')
+      expect(helper.valid?).to be(false)
+      expect(helper.errors.join("\n")).to include('outside a string')
+    end
+
+    # Single-line bare pill: the `#{...}` comment eats the closing `]`, so RuboCop returns a nil
+    # ast WITH a syntax diagnostic ("unexpected token"/"expected a matching ]"). The actionable
+    # pill message must win over that cryptic parser error, and it must be the only error.
+    it 'flags a single-line bare data pill with the actionable message, not the parser error' do
+      helper = described_class.new(Object.new, 'mapping[#{trigger_output}]')
+      expect(helper.valid?).to be(false)
+      expect(helper.errors.length).to eq(1)
+      expect(helper.errors.join("\n")).to include('outside a string')
+    end
+
+    it 'does not flag a data pill used inside a double-quoted string' do
+      helper = described_class.new(Object.new, '"count: #{1 + 1}"')
+      expect(helper.valid?).to be(true)
+      expect(helper.errors.join("\n")).not_to include('outside a string')
+    end
+
+    # A literal `#{...}` inside single quotes is not interpolation and must not be flagged
+    # (Ruby never lexes it as a comment). Contrast case for the comment scan.
+    it 'does not flag a literal #{} inside a single-quoted string' do
+      helper = described_class.new(Object.new, %q('prefix #{trigger_output} suffix'))
+      expect(helper.valid?).to be(true)
+      expect(helper.errors.join("\n")).not_to include('outside a string')
+    end
+
+    it 'does not flag an ordinary comment' do
+      helper = described_class.new(Object.new, '1 + 1 # add the numbers')
+      expect(helper.valid?).to be(true)
+      expect(helper.errors.join("\n")).not_to include('outside a string')
     end
   end
 end

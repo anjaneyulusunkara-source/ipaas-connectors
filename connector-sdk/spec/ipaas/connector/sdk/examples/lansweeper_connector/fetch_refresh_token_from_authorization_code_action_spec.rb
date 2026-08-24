@@ -25,6 +25,8 @@ describe 'Lansweeper Get OAuth Refresh Token Action', :action do
   end
 
   describe 'output_schema' do
+    let(:response_headers) { action.output_schema.first.field(:response).field(:headers) }
+
     it 'should define the output fields' do
       output_schema = action.output_schema.first
 
@@ -44,6 +46,14 @@ describe 'Lansweeper Get OAuth Refresh Token Action', :action do
         expect(field.type).to eq(:secret_string)
         expect(field.required).to be_falsey
       end
+    end
+
+    it 'should require a response header name' do
+      expect(response_headers.field(:name).required).to be_truthy
+    end
+
+    it 'should keep the response header value optional so an empty value validates' do
+      expect(response_headers.field(:value).required).to be_falsey
     end
   end
 
@@ -140,6 +150,25 @@ describe 'Lansweeper Get OAuth Refresh Token Action', :action do
         expect(output[:response][:headers]).to include(hash_including('name' => 'content-type',
                                                                       'value' => 'application/json'))
         expect(output[:response][:headers]).to include(hash_including('name' => 'x-rate-limit', 'value' => '100'))
+        expect(action.decrypt_secret_string(output[:refresh_token])).to eq('test-refresh-token')
+
+        expect(stub).to have_been_requested.once
+      end
+
+      it 'returns a response header the server sent with an empty value' do
+        oauth_response = { access_token: 'test-access-token', refresh_token: 'test-refresh-token' }
+
+        stub = stub_request(:post, generate_expected_url)
+               .to_return(
+                 status: 200,
+                 body: oauth_response.to_json,
+                 headers: { 'Content-Type' => 'application/json', 'X-Rate-Limit' => '' },
+               )
+
+        output = trigger_action
+
+        expect(output[:response][:status]).to eq(200)
+        expect(output[:response][:headers]).to include(hash_including('name' => 'x-rate-limit', 'value' => ''))
         expect(action.decrypt_secret_string(output[:refresh_token])).to eq('test-refresh-token')
 
         expect(stub).to have_been_requested.once

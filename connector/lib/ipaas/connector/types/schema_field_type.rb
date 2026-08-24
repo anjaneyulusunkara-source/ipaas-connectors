@@ -13,10 +13,16 @@ module IPaaS
 
           def resolve(value, context: nil)
             return value if value.is_a?(IPaaS::Connector::Schema::Field)
-            return value unless value.is_a?(Hash)
+            return value if value.is_a?(Array)
+            return value if value.is_a?(IPaaS::Connector::Common::UnresolvedNode)
 
-            value[:type] = value[:type].to_sym if value[:type]
-            value[:id] = value[:id].to_sym if value[:id]
+            if (value.is_a?(String) || value.is_a?(Symbol)) && value.to_s.present?
+              value = { id: value.to_s, label: value.to_s, type: 'string' }
+            end
+            return unless value.is_a?(Hash)
+
+            value[:type] = value[:type].to_sym if symbolizable?(value[:type])
+            value[:id] = value[:id].to_sym if symbolizable?(value[:id])
             fields = value[:fields]
             IPaaS::Connector::Schema::Field.new.tap do |schema_field|
               valid_attributes = value.except(:fields).select do |attr_name, _attr_value|
@@ -25,6 +31,10 @@ module IPaaS
               schema_field.attributes = valid_attributes
               schema_field.fields = (fields || []).filter_map { |f| resolve(f) }
             end
+          end
+
+          def symbolizable?(value)
+            value && !IPaaS::Connector::Common::UnresolvedNode.within?(value)
           end
 
           def nested?

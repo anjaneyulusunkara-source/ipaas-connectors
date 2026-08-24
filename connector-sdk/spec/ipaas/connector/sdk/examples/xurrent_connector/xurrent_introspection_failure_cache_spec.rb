@@ -50,8 +50,7 @@ describe 'Xurrent Introspection Failure Cache', :action do
     stub_introspection(endpoint: 'https://graphql.xurrent-oauth-test.com/')
     @action = action(action_input)
     @action.outbound_connection.cache_clear('gql_schema')
-    current_gen = @action.outbound_connection.cache_read('gql_bundle_gen').to_i
-    @action.outbound_connection.cache_write('gql_bundle_gen', current_gen + 1, 3600)
+    IPaaS::Job::GraphQL::ArtifactCache.gql_bump_bundle_generation(@action.outbound_connection)
     WebMock.reset!
   end
 

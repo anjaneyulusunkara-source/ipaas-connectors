@@ -40,8 +40,8 @@ module IPaaS
           [:fixed, :proc, :negated, :failure_message].each do |attr|
             obj.send("#{attr}=", hash[attr])
           end
-          obj.field_id = hash[:field_id]&.to_s&.presence&.to_sym
-          obj.matcher = hash[:matcher]&.to_sym || :equals
+          obj.field_id = IPaaS::Connector::Common::UnresolvedNode.symbolize(hash[:field_id])
+          obj.matcher = IPaaS::Connector::Common::UnresolvedNode.symbolize(hash[:matcher]) || :equals
         end
 
         def parse_nested(obj, value)

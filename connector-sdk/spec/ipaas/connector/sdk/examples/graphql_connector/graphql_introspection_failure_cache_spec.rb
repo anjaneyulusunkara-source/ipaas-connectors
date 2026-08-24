@@ -55,8 +55,7 @@ describe 'GraphQL Introspection Failure Cache', :action do
     stub_graphql_connector_introspection
     @action = action(action_input)
     @action.outbound_connection.cache_clear('gql_schema')
-    current_gen = @action.outbound_connection.cache_read('gql_bundle_gen').to_i
-    @action.outbound_connection.cache_write('gql_bundle_gen', current_gen + 1, bundle_ttl)
+    IPaaS::Job::GraphQL::ArtifactCache.gql_bump_bundle_generation(@action.outbound_connection)
     WebMock.reset!
   end
 
@@ -124,6 +123,43 @@ describe 'GraphQL Introspection Failure Cache', :action do
       expect(introspection_request_count).to eq(1)
     end
 
+    context 'with a basic-auth connection' do
+      let(:outbound_connection_config) do
+        {
+          graphql_endpoint: graphql_endpoint,
+          auth_type: 'basic_auth',
+          basic_auth: { username: 'peter', password: make_secret_string('hunter2') },
+          schema_source: 'introspection',
+        }
+      end
+
+      it 're-attempts when the basic auth password changes' do
+        stub_introspection_failure(status: 400, body: 'Bad request')
+        attempt_run # first load caches the failure under the current password key
+        expect(introspection_request_count).to eq(1)
+
+        WebMock.reset!
+        stub_introspection_failure(status: 400, body: 'Bad request')
+        @action.outbound_connection.config[:basic_auth][:password] = @action.make_secret_string('rotated-pass')
+
+        attempt_run
+        expect(introspection_request_count).to eq(1)
+      end
+
+      it 're-attempts when the basic auth username changes' do
+        stub_introspection_failure(status: 400, body: 'Bad request')
+        attempt_run # first load caches the failure under the current username key
+        expect(introspection_request_count).to eq(1)
+
+        WebMock.reset!
+        stub_introspection_failure(status: 400, body: 'Bad request')
+        @action.outbound_connection.config[:basic_auth][:username] = 'someone-else'
+
+        attempt_run
+        expect(introspection_request_count).to eq(1)
+      end
+    end
+
     context 'with an api-key-header connection' do
       let(:outbound_connection_config) do
         {
@@ -177,6 +213,23 @@ describe 'GraphQL Introspection Failure Cache', :action do
         key = capture_written_failure_key
         expect(key).to start_with('introspection_failure_')
         expect(key).not_to include('secret-key')
+      end
+    end
+
+    context 'with a basic-auth connection' do
+      let(:outbound_connection_config) do
+        {
+          graphql_endpoint: graphql_endpoint,
+          auth_type: 'basic_auth',
+          basic_auth: { username: 'peter', password: make_secret_string('hunter2') },
+          schema_source: 'introspection',
+        }
+      end
+
+      it 'never embeds the basic auth password in the key the connector writes' do
+        key = capture_written_failure_key
+        expect(key).to start_with('introspection_failure_')
+        expect(key).not_to include('hunter2')
       end
     end
   end

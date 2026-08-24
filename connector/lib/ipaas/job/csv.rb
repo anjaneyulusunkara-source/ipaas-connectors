@@ -98,9 +98,8 @@ module IPaaS
           )
         end
 
-        # Stops shifting at the cap; eof? peeks (fully parses) the overflow row
-        # but catches its parse error internally, so a malformed or oversized
-        # overflow row cannot fail an already-complete result.
+        # On reaching the cap, reads one row past it and discards it, which leaves csv
+        # spent: nothing may read from it after this returns.
         # @return [Array(Array, Boolean)] rows, truncated?
         def read_capped_rows(csv)
           rows = []
@@ -111,7 +110,17 @@ module IPaaS
             check_columns!(row)
             rows << row
           end
-          [rows, !csv.eof?]
+          [rows, overflow_row?(csv)]
+        end
+
+        # Asks for a row rather than for eof?: csv 3.3.6 reimplemented eof? as a raw
+        # end-of-string test, so a trailing blank line began reporting truncated.
+        # The row is discarded, so a malformed or oversized one must not fail an
+        # already-complete result; a parse failure still means there is more data.
+        def overflow_row?(csv)
+          !csv.shift.nil?
+        rescue CSV::MalformedCSVError
+          true
         end
 
         def check_columns!(row)

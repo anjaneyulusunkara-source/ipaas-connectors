@@ -451,9 +451,9 @@ describe 'Xurrent Mutation Action', :action do
       expect(a.input).not_to be_valid # precondition: the memo is invalid
 
       a.outbound_connection.cache_clear('gql_schema')
-      # Clear the generation token so the invalid-memo re-resolution takes the cold
-      # path (a warm bundle would let the gate re-resolve without introspecting).
-      a.outbound_connection.cache_clear('gql_bundle_gen')
+      # Orphan the derived caches so the invalid-memo re-resolution takes the cold path
+      # (a warm bundle would let the gate re-resolve without introspecting).
+      IPaaS::Job::GraphQL::ArtifactCache.gql_bump_bundle_generation(a.outbound_connection)
       WebMock.reset!
       introspection_stub = stub_failing_introspection
 
@@ -505,9 +505,9 @@ describe 'Xurrent Mutation Action', :action do
 
     it 'fetches schema via introspection when cache is empty' do
       @mutation_action.outbound_connection.cache_clear('gql_schema')
-      # Clear the generation token too: without it the warm bundle would serve the
-      # build and run without introspecting, so a truly empty cache has no generation.
-      @mutation_action.outbound_connection.cache_clear('gql_bundle_gen')
+      # Orphan the derived caches too, or the warm bundle would serve the build and run
+      # without introspecting.
+      IPaaS::Job::GraphQL::ArtifactCache.gql_bump_bundle_generation(@mutation_action.outbound_connection)
 
       introspection_stub = stub_introspection
       @mutation_action.run

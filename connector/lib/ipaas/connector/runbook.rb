@@ -39,16 +39,16 @@ module IPaaS
       validate :runbook_variables_valid?
 
       class << self
-        def parse(runbook)
-          hash = IPaaS::Connector::Common::Serializer.parse(runbook, with_uuid: true)
+        def parse(runbook, resolve: true, tolerant: false)
+          hash = IPaaS::Connector::Common::Serializer.parse(runbook, with_uuid: true, tolerant: tolerant)
           raise IPaaS::Error, 'Runbook must be a hash.' unless hash.is_a?(Hash)
           hash = hash.deep_symbolize_keys
 
           Runbook.new(hash[:uuid]).tap do |new_runbook|
             parse_concurrency(new_runbook, hash[:concurrency])
             parse_runbook_variables(new_runbook, hash.fetch(:runbook_variables, []))
-            copy_runbook_values(new_runbook, hash)
-            new_runbook.valid? # triggers resolve
+            copy_runbook_values(new_runbook, hash, resolve: resolve)
+            new_runbook.valid? if resolve # triggers resolve
           end
         end
 
@@ -57,7 +57,8 @@ module IPaaS
           unless concurrency.is_a?(Hash) && concurrency[:type].present?
             raise IPaaS::Error, 'Concurrency must indicate type.'
           end
-          type_value = concurrency[:type].to_s.to_sym
+          type_value = concurrency[:type]
+          type_value = type_value.to_s.to_sym unless IPaaS::Connector::Common::UnresolvedNode.within?(type_value)
 
           runbook.concurrency = { type: type_value }
         end
@@ -70,20 +71,22 @@ module IPaaS
 
         private
 
-        def copy_runbook_values(runbook, hash)
+        def copy_runbook_values(runbook, hash, resolve: true)
           runbook.name = hash[:name]
           runbook.description = hash[:description]
-          runbook.trigger = IPaaS::Connector::Trigger.parse(runbook, hash[:trigger]) if hash.key?(:trigger)
-          copy_actions(runbook, hash)
+          if hash.key?(:trigger)
+            runbook.trigger = IPaaS::Connector::Trigger.parse(runbook, hash[:trigger], resolve: resolve)
+          end
+          copy_actions(runbook, hash, resolve: resolve)
         end
 
-        def copy_actions(runbook, hash)
+        def copy_actions(runbook, hash, resolve: true)
           runbook.actions = Array(hash[:actions]).map do |action|
-            IPaaS::Connector::Action.parse(runbook, action)
+            IPaaS::Connector::Action.parse(runbook, action, resolve: resolve)
           end
           # re-evaluate as runbook variables may depend on variables defined in outbound connections related
           # to successor actions
-          runbook.actions.map { |action| action.input(resolve: true) }
+          runbook.actions.map { |action| action.input(resolve: true) } if resolve
         end
       end
 
@@ -150,6 +153,7 @@ module IPaaS
 
         output_schema = find_output_schema(action, output_schema_reference)
         return stored_value unless output_schema
+        return stored_value unless output_schema.declares_secret_string?
 
         reconstruct_secret_strings(stored_value, output_schema)
       end
@@ -184,8 +188,12 @@ module IPaaS
         job_state.read("variable:#{id}")
       end
 
+      def defined_runbook_variables
+        Array(runbook_variables).grep(IPaaS::Connector::Schema::Field)
+      end
+
       def variable_field(id)
-        runbook_variables.detect { |variable| variable.id.to_s == id.to_s }&.deep_dup
+        defined_runbook_variables.detect { |variable| variable.id.to_s == id.to_s }&.deep_dup
       end
 
       def add_action_errors
@@ -280,7 +288,7 @@ module IPaaS
       end
 
       def secret_string_field?(field)
-        field.type == :secret_string
+        field.secret_string?
       end
 
       def reconstruct_array_fields(value, field)
@@ -369,6 +377,7 @@ module IPaaS
         return unless concurrency.present?
 
         type_value = concurrency[:type]
+        return if IPaaS::Connector::Common::UnresolvedNode.within?(type_value)
         return if type_value.in?(SUPPORTED_CONCURRENCY_TYPES)
 
         errors.add(:concurrency, "Concurrency type must be one of: [#{SUPPORTED_CONCURRENCY_TYPES.join(', ')}]")
@@ -403,9 +412,25 @@ module IPaaS
 
       def runbook_variables_valid?
         return true if runbook_variables.blank?
-        ids = runbook_variables.map { |x| x.id.to_s }
-        return unless ids.size != ids.uniq.size
+
+        report_duplicate_runbook_variable
+        defined_runbook_variables.each { |variable| report_unloadable_runbook_variable(variable) }
+      end
+
+      def report_unloadable_runbook_variable(variable)
+        return unless variable.unloadable_values?
+        return if variable.valid?
+
+        errors.add(:runbook_variables, "Runbook variable '#{variable.id}': #{variable.full_error_messages}")
+      end
+
+      def report_duplicate_runbook_variable
+        ids = defined_runbook_variables.map(&:id)
+                                       .reject { |id| IPaaS::Connector::Common::UnresolvedNode.within?(id) }
+                                       .map(&:to_s)
         duplicate = ids.detect { |id| ids.count(id) > 1 }
+        return unless duplicate
+
         errors.add(:runbook_variables, "Runbook variable '#{duplicate}' is defined more than once")
       end
     end

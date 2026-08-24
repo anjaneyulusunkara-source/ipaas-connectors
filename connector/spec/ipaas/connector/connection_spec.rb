@@ -268,6 +268,30 @@ describe IPaaS::Connector::Connection do
         end.to raise_error('Cannot provision connection when the config is invalid.')
         expect(invalid_connection.errors[:config_mapping]).to include("invalid: Field 'bar' is required.")
       end
+
+      def config_mapping_connection(proc_body)
+        IPaaS::Connector::Connection.parse(
+          {
+            direction: 'outbound',
+            name: 'test outbound connection',
+            connector: { uuid: connector.uuid },
+            config_mapping: [{ field_id: 'bar', proc: proc_body }],
+          }.to_yaml
+        )
+      end
+
+      it 'does not recurse when a config mapping references config' do
+        self_referential = config_mapping_connection('config[:bar]')
+        expect { self_referential.valid? }.not_to raise_error
+        expect(self_referential.valid?).to be(true)
+        expect(self_referential.config[:bar]).to be_nil
+      end
+
+      it 'does not recurse when a config mapping forces re-resolution of itself' do
+        self_referential = config_mapping_connection('config(resolve: true)[:bar]')
+        expect { self_referential.valid? }.not_to raise_error
+        expect(self_referential.config[:bar]).to be_nil
+      end
     end
 
     context 'runbook variables' do

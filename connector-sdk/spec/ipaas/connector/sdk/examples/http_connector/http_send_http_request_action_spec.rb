@@ -98,11 +98,29 @@ describe 'HTTP Send HTTP Request Action', :action do
     end
 
     it 'should validate the pattern of the query parameter name' do
-      expect(action.input_schema.field(:query_parameters).field(:name).pattern).to eq(/\A[A-Za-z0-9\-_\[\]]+\z/)
+      pattern = action.input_schema.field(:query_parameters).field(:name).pattern
+      expect(pattern).to eq(/\A[A-Za-z0-9$\-_\[\]]+\z/)
+      expect('$filter').to match(pattern)
+      expect('$skiptoken').to match(pattern)
+      expect('$top').to match(pattern)
+      expect('%24filter').not_to match(pattern)
+      expect('$fil ter').not_to match(pattern)
     end
 
     it 'should keep body optional' do
       expect(action.input_schema.field(:body).required).to be_falsey
+    end
+  end
+
+  context 'output_schema' do
+    let(:response_headers) { action.output_schemas.first.field(:response).field(:headers) }
+
+    it 'should require a response header name' do
+      expect(response_headers.field(:name).required).to be_truthy
+    end
+
+    it 'should keep the response header value optional so an empty value validates' do
+      expect(response_headers.field(:value).required).to be_falsey
     end
   end
 
@@ -243,6 +261,16 @@ describe 'HTTP Send HTTP Request Action', :action do
         expect(stub).to have_been_requested.once
       end
 
+      it 'should percent-encode an OData $-prefixed parameter name on the wire' do
+        stub = stub_request(:get, "#{example_server}?%24top=5")
+               .to_return(body: 'Hello World!')
+        output = run_action({ method: 'GET', query_parameters: [
+          { name: '$top', value: '5' },
+        ], })
+        expect(output.dig(:response, :body)).to eq('Hello World!')
+        expect(stub).to have_been_requested.once
+      end
+
       context 'multi valued' do
         it 'should add an empty multi valued parameter' do
           # TODO: This is incorrect in Faraday, see https://github.com/lostisland/faraday/issues/182
@@ -342,6 +370,17 @@ describe 'HTTP Send HTTP Request Action', :action do
     end
 
     context 'query parameter encoding' do
+      # WebMock sorts query keys on both sides before matching, so a stub URL proves which bytes
+      # each value carries but never the order the keys went out in. Capture what the encoder
+      # emits instead: that string is verbatim the query Faraday puts on the wire.
+      def captured_queries
+        queries = []
+        allow(IPaaS::Job::Outbound::SelectiveParamsEncoder).to receive(:encode).and_wrap_original do |original, params|
+          original.call(params).tap { |query| queries << query }
+        end
+        queries
+      end
+
       it 'should append [] to repeated parameter names' do
         # Locks the documented on-the-wire format: two entries with the same
         # name are emitted as `name[]=A&name[]=B`, not `name=A&name=B`.
@@ -350,6 +389,229 @@ describe 'HTTP Send HTTP Request Action', :action do
         output = run_action({ method: 'GET', query_parameters: [
           { name: 'q', value: 'A' },
           { name: 'q', value: 'B' },
+        ], })
+        expect(output.dig(:response, :body)).to eq('Hello World!')
+        expect(stub).to have_been_requested.once
+      end
+
+      it 'should escape an already-encoded value again when already_encoded is not set' do
+        # Contrast case for the specs below: this is the pre-existing behaviour that
+        # breaks signed URLs, and it must stay put for every caller that does not opt out.
+        stub = stub_request(:get, "#{example_server}?d=attachment%253B%2Bfile.csv")
+               .to_return(body: 'Hello World!')
+        output = run_action({ method: 'GET', query_parameters: [
+          { name: 'd', value: 'attachment%3B+file.csv' },
+        ], })
+        expect(output.dig(:response, :body)).to eq('Hello World!')
+        expect(stub).to have_been_requested.once
+      end
+
+      it 'should send an already-encoded value byte-for-byte when already_encoded is set' do
+        stub = stub_request(:get, "#{example_server}?d=attachment%3B+file.csv")
+               .to_return(body: 'Hello World!')
+        output = run_action({ method: 'GET', query_parameters: [
+          { name: 'd', value: 'attachment%3B+file.csv', already_encoded: true },
+        ], })
+        expect(output.dig(:response, :body)).to eq('Hello World!')
+        expect(stub).to have_been_requested.once
+      end
+
+      it 'should still escape an unflagged value sitting alongside a raw one' do
+        stub = stub_request(:get, "#{example_server}?d=a%3Bb&note=x+y")
+               .to_return(body: 'Hello World!')
+        output = run_action({ method: 'GET', query_parameters: [
+          { name: 'd', value: 'a%3Bb', already_encoded: true },
+          { name: 'note', value: 'x y' },
+        ], })
+        expect(output.dig(:response, :body)).to eq('Hello World!')
+        expect(stub).to have_been_requested.once
+      end
+
+      it 'should escape the value when already_encoded is explicitly false' do
+        stub = stub_request(:get, "#{example_server}?d=a%253Bb")
+               .to_return(body: 'Hello World!')
+        output = run_action({ method: 'GET', query_parameters: [
+          { name: 'd', value: 'a%3Bb', already_encoded: false },
+        ], })
+        expect(output.dig(:response, :body)).to eq('Hello World!')
+        expect(stub).to have_been_requested.once
+      end
+
+      it 'should pass the value through when a proc supplies the flag as a string' do
+        # A whole-array `proc:`/`fixed:` mapping is not type-cast (NestedType falls back to a plain
+        # hash), so the flag arrives as a String here where the designer's nested path arrives cast.
+        # Both shapes must agree, or the same value 403s depending on how the mapping was authored.
+        stub = stub_request(:get, "#{example_server}?d=a%3Bb").to_return(body: 'Hello World!')
+        run_action({ method: 'GET', query_parameters: [
+          { name: 'd', value: 'a%3Bb', already_encoded: 'true' },
+        ], })
+        expect(stub).to have_been_requested.once
+      end
+
+      it 'should escape the value when a proc supplies a false-ish flag as a string' do
+        queries = captured_queries
+        stub = stub_request(:get, "#{example_server}?d=a%253Bb").to_return(body: 'Hello World!')
+
+        output = run_action({ method: 'GET', query_parameters: [
+          { name: 'd', value: 'a%3Bb', already_encoded: '0' },
+        ], })
+
+        expect(output.dig(:response, :body)).to eq('Hello World!')
+        expect(queries.last).to eq('d=a%253Bb')
+        expect(stub).to have_been_requested.once
+      end
+
+      # The spellings ActiveModel would read as true and the toggle deliberately does not. Each one
+      # has to stay escaped, or a condition that readmitted any of them would pass this suite unseen.
+      %w[1 t on yes].each do |flag|
+        it "should not treat #{flag.inspect} as enabling already_encoded" do
+          queries = captured_queries
+          stub = stub_request(:get, "#{example_server}?d=a%253Bb").to_return(body: 'Hello World!')
+
+          output = run_action({ method: 'GET', query_parameters: [
+            { name: 'd', value: 'a%3Bb', already_encoded: flag },
+          ], })
+
+          expect(output.dig(:response, :body)).to eq('Hello World!')
+          expect(queries.last).to eq('d=a%253Bb')
+          expect(stub).to have_been_requested.once
+        end
+      end
+
+      it 'should send a signed URL query string in the given order, byte for byte' do
+        # CloudFront signs the literal query string, so both the escaping and the key order
+        # have to survive. Faraday's default encoder would sort these alphabetically.
+        signed = 'response-content-disposition=attachment%3B+filename%2A%3DUTF-8%27%27p.csv' \
+                 '&Expires=1786611447&Signature=321Khx-zhb8Uv5x~ONRVnpn__&Key-Pair-Id=K1B11OUIVHWE4B'
+        queries = captured_queries
+        stub = stub_request(:get, "#{example_server}?#{signed}").to_return(body: 'csv,data')
+        output = run_action({ method: 'GET', query_parameters: [
+          { name: 'response-content-disposition',
+            value: 'attachment%3B+filename%2A%3DUTF-8%27%27p.csv', already_encoded: true, },
+          { name: 'Expires', value: '1786611447', already_encoded: true },
+          { name: 'Signature', value: '321Khx-zhb8Uv5x~ONRVnpn__', already_encoded: true },
+          { name: 'Key-Pair-Id', value: 'K1B11OUIVHWE4B', already_encoded: true },
+        ], })
+        expect(output.dig(:response, :body)).to eq('csv,data')
+        expect(queries.last).to eq(signed)
+        expect(stub).to have_been_requested.once
+      end
+
+      context 'with an API key placed in the query string' do
+        let(:outbound_connection_config) do
+          {
+            # The space matters: it makes the escaped form differ visibly from the raw one, so
+            # the assertion below can tell "escaped" from "passed through".
+            api_key: { key: 'secret', value: make_secret_string('k 1'), placement: 'Query params' },
+            base_url: example_server,
+          }
+        end
+
+        it 'should still escape the injected key and lead the query string with it' do
+          # The key is injected when the connection is built, before the action's params are
+          # set, so it leads the query string rather than landing inside the signed portion.
+          queries = captured_queries
+          stub = stub_request(:get, "#{example_server}?secret=k+1&d=a%3Bb&zz=x+y")
+                 .to_return(body: 'Hello World!')
+          output = run_action({ method: 'GET', query_parameters: [
+            { name: 'd', value: 'a%3Bb', already_encoded: true },
+            { name: 'zz', value: 'x y' },
+          ], })
+          expect(output.dig(:response, :body)).to eq('Hello World!')
+          expect(queries.last).to eq('secret=k+1&d=a%3Bb&zz=x+y')
+          expect(stub).to have_been_requested.once
+        end
+      end
+
+      it 'should keep a name-only parameter bare whichever way the toggle is set' do
+        # `value` is not required, so an entry can be name-only. Flipping encoding must not turn a
+        # bare `flag` into `flag=`; that is a different request to APIs that distinguish the two.
+        stub = stub_request(:get, "#{example_server}?flag").to_return(body: 'Hello World!')
+        run_action({ method: 'GET', query_parameters: [{ name: 'flag', already_encoded: true }] })
+        run_action({ method: 'GET', query_parameters: [{ name: 'flag' }] })
+        expect(stub).to have_been_requested.twice
+      end
+
+      it 'should read a toggle that carries surrounding whitespace, as a data pill can' do
+        # The uncast whole-array path hands the toggle over as a raw string; without the strip this
+        # silently escapes the value a second time and the signed URL 403s with no error.
+        stub = stub_request(:get, "#{example_server}?d=a%3Bb").to_return(body: 'Hello World!')
+        run_action({ method: 'GET', query_parameters: [
+          { name: 'd', value: 'a%3Bb', already_encoded: ' True ' },
+        ], })
+        expect(stub).to have_been_requested.once
+      end
+
+      it 'should refuse an unencoded value that would inject a second query parameter' do
+        # The value beside the toggle routinely carries a data pill from a webhook payload, so a
+        # bare & would let a third party append parameters to an authenticated outbound request.
+        expect do
+          run_action({ method: 'GET', query_parameters: [
+            { name: 'filter', value: 'sig&api_key=EVIL', already_encoded: true },
+          ], })
+        end.to raise_error(IPaaS::Error, /must not contain '&', ';', a tab/)
+      end
+
+      it 'should refuse an unencoded value that would inject a parameter with a semicolon' do
+        # `;` survives URI::Generic#query= verbatim, and CGI.parse, PHP and Jetty treat it as a
+        # separator, so it appends a parameter on any such target just as a bare & would.
+        expect do
+          run_action({ method: 'GET', query_parameters: [
+            { name: 'filter', value: 'sig;api_key=EVIL', already_encoded: true },
+          ], })
+        end.to raise_error(IPaaS::Error, /must not contain '&', ';', a tab/)
+      end
+
+      context 'configured the way the designer stores it' do
+        # run_action builds one `fixed:` blob holding the whole array with a native Ruby false.
+        # The designer instead writes a nested mapping per array entry, and BooleanFieldEditor
+        # stores the toggle as String(value), so what actually reaches the connector is the
+        # STRING "true", cast back to a boolean by BooleanType. Nothing else covers that path.
+        def designer_input_mapping(flag_fixed)
+          nested = [{ field_id: 'name', fixed: 'd' }, { field_id: 'value', fixed: 'a%3Bb' }]
+          nested << { field_id: 'already_encoded', fixed: flag_fixed } if flag_fixed
+          [{ field_id: 'method', fixed: 'GET' }, { field_id: 'query_parameters', nested: nested }]
+        end
+
+        def run_designer_action(flag_fixed)
+          built = IPaaS::Connector::Action.parse(
+            runbook,
+            { reference: SecureRandom.uuid,
+              outbound_connection: { uuid: outbound_connection&.uuid },
+              action_template: { uuid: action_template.uuid },
+              input_mapping: designer_input_mapping(flag_fixed), },
+          )
+          raise IPaaS::Error, "Action invalid: #{built.full_error_messages}" unless built.valid?
+
+          built.run
+        end
+
+        it 'should pass the value through when the toggle stored the string "true"' do
+          stub = stub_request(:get, "#{example_server}?d=a%3Bb").to_return(body: 'Hello World!')
+          run_designer_action('true')
+          expect(stub).to have_been_requested.once
+        end
+
+        it 'should escape the value when the toggle stored the string "false"' do
+          stub = stub_request(:get, "#{example_server}?d=a%253Bb").to_return(body: 'Hello World!')
+          run_designer_action('false')
+          expect(stub).to have_been_requested.once
+        end
+
+        it 'should escape the value when the entry predates the toggle' do
+          # No already_encoded child at all, which is every parameter stored before this change.
+          stub = stub_request(:get, "#{example_server}?d=a%253Bb").to_return(body: 'Hello World!')
+          run_designer_action(nil)
+          expect(stub).to have_been_requested.once
+        end
+      end
+
+      it 'should send repeated raw names bare instead of appending []' do
+        stub = stub_request(:get, "#{example_server}?q=A&q=B")
+               .to_return(body: 'Hello World!')
+        output = run_action({ method: 'GET', query_parameters: [
+          { name: 'q', value: 'A', already_encoded: true },
+          { name: 'q', value: 'B', already_encoded: true },
         ], })
         expect(output.dig(:response, :body)).to eq('Hello World!')
         expect(stub).to have_been_requested.once
@@ -367,6 +629,36 @@ describe 'HTTP Send HTTP Request Action', :action do
         multi = output.dig(:response, :headers).select { |h| h[:name].to_s.downcase == 'x-multi' }
         expect(multi.size).to eq(1)
         expect(multi.first[:value]).to eq('a, b')
+      end
+
+      it 'should return a header the server sent with an empty value' do
+        # An empty field value is valid HTTP, so a 200 carrying one must not fail
+        # output validation. The entry is kept so the runbook still sees the header.
+        stub_request(:get, example_server)
+          .to_return(body: 'Hello World!', headers: { 'x-ratelimit-limit' => '' })
+        output = run_action({ method: 'GET' })
+        expect(output.dig(:response, :headers)).to include({ name: 'x-ratelimit-limit', value: '' })
+      end
+
+      it 'should return the Request#81284669 response whose three rate-limit headers are all empty' do
+        stub_request(:get, example_server).to_return(
+          status: 200,
+          body: '{"count":1}',
+          headers: {
+            'content-type' => 'application/json',
+            'x-ratelimit-limit' => '',
+            'x-ratelimit-remaining' => '',
+            'x-ratelimit-period' => '',
+          },
+        )
+        output = run_action({ method: 'GET' })
+        expect(output.dig(:response, :status)).to eq(200)
+        expect(output.dig(:response, :body)).to eq('{"count":1}')
+        expect(output.dig(:response, :headers)).to include(
+          { name: 'x-ratelimit-limit', value: '' },
+          { name: 'x-ratelimit-remaining', value: '' },
+          { name: 'x-ratelimit-period', value: '' },
+        )
       end
     end
 

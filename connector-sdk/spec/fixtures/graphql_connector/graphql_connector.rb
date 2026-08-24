@@ -46,7 +46,7 @@ class GraphqlConnector < IPaaS::Connector::Definition
       Generic connector for integrating with any GraphQL API using dynamic schema introspection.
 
       # Outbound Connection
-      An outbound connection is required for the query and mutation actions. It supports three authentication methods: **Bearer Token**, **API Key Header**, and **OAuth2 Client Credentials**.
+      An outbound connection is required for the query and mutation actions. It supports four authentication methods: **Bearer Token**, **Basic Authentication**, **API Key Header**, and **OAuth2 Client Credentials**.
 
       Provide the GraphQL endpoint URL and optionally a URL to the GraphQL schema (introspection endpoint) or paste the full schema JSON directly. When a schema URL is provided, the schema is downloaded and stored in the full schema field automatically.
 
@@ -143,8 +143,8 @@ class GraphqlConnector < IPaaS::Connector::Definition
       GqlArtifactCache.gql_read_root_options(helpers.schema_cache_store, operation)
     end
 
-    helper :write_root_options do |operation, options|
-      GqlArtifactCache.gql_write_root_options(helpers.schema_cache_store, operation, options)
+    helper :selector_notice do
+      GqlArtifactCache.gql_selector_notice(helpers.schema_cache_store, 'the GraphQL API')
     end
 
     # ──────────────────────────────────────────────
@@ -165,6 +165,10 @@ class GraphqlConnector < IPaaS::Connector::Definition
                 Use a static bearer token (e.g. a personal access token or API token).
                 The token is sent as `Authorization: Bearer <token>` header.
 
+                # Basic Authentication
+                Use a username and password. The credentials are sent as
+                `Authorization: Basic <base64(username:password)>` header.
+
                 # API Key Header
                 Send an API key as a custom HTTP header.
                 Configure the header name and value.
@@ -178,6 +182,7 @@ class GraphqlConnector < IPaaS::Connector::Definition
               HINT
               enumeration: [
                 { id: 'bearer_token', label: 'Bearer Token' },
+                { id: 'basic_auth', label: 'Basic Authentication' },
                 { id: 'api_key_header', label: 'API Key Header' },
                 { id: 'oauth2', label: 'OAuth2 Client Credentials' },
                 { id: 'none', label: 'No Authentication' },
@@ -188,6 +193,16 @@ class GraphqlConnector < IPaaS::Connector::Definition
               visibility: 'hidden' do
           field :token, 'Token', :secret_string,
                 hint: 'The bearer token to send in the Authorization header.',
+                required: true
+        end
+
+        field :basic_auth, 'Basic Authentication', :nested,
+              visibility: 'hidden' do
+          field :username, 'Username', :string,
+                hint: 'The username to authenticate with.',
+                required: true
+          field :password, 'Password', :secret_string,
+                hint: 'The password to authenticate with.',
                 required: true
         end
 
@@ -225,19 +240,6 @@ class GraphqlConnector < IPaaS::Connector::Definition
           field :value, 'Header value', :string, required: true
         end
 
-        after_update do |fields, new_values|
-          auth_type = new_values[:auth_type]
-          bearer_field = fields.detect { |f| f.id == :bearer_token }
-          api_key_field = fields.detect { |f| f.id == :api_key_header }
-          oauth2_field = fields.detect { |f| f.id == :oauth2 }
-
-          bearer_field.visibility = auth_type == 'bearer_token' ? 'visible' : 'hidden'
-          api_key_field.visibility = auth_type == 'api_key_header' ? 'visible' : 'hidden'
-          oauth2_field.visibility = auth_type == 'oauth2' ? 'visible' : 'hidden'
-
-          fields
-        end
-
         field :schema_source, 'Schema source', :string,
               hint: <<~HINT.strip,
                 Choose how to provide the GraphQL schema for dynamic field generation.
@@ -263,10 +265,14 @@ class GraphqlConnector < IPaaS::Connector::Definition
               visibility: 'hidden'
 
         after_update do |fields, new_values|
-          schema_source = new_values[:schema_source]
-          full_schema_field = fields.detect { |f| f.id == :full_schema }
+          auth_type = new_values[:auth_type]
+          fields.detect { |f| f.id == :auth_type }.enumeration.each do |option|
+            group = fields.detect { |f| f.id == option[:id].to_sym }
+            group&.visibility = auth_type == option[:id] ? 'visible' : 'hidden'
+          end
 
-          full_schema_field.visibility = schema_source == 'manual' ? 'visible' : 'optional'
+          fields.detect { |f| f.id == :full_schema }
+                .visibility = new_values[:schema_source] == 'manual' ? 'visible' : 'optional'
 
           fields
         end
@@ -277,6 +283,11 @@ class GraphqlConnector < IPaaS::Connector::Definition
         when 'bearer_token'
           token = decrypt_secret_string(config[:bearer_token][:token])
           request.headers['Authorization'] = "Bearer #{token}"
+        when 'basic_auth'
+          basic_auth_config = config[:basic_auth]
+          password = decrypt_secret_string(basic_auth_config[:password])
+          encoded = Base64.strict_encode64("#{basic_auth_config[:username]}:#{password}")
+          request.headers['Authorization'] = "Basic #{encoded}"
         when 'api_key_header'
           api_key_config = config[:api_key_header]
           request.headers[api_key_config[:header_name]] = decrypt_secret_string(api_key_config[:header_value])
@@ -339,6 +350,7 @@ class GraphqlConnector < IPaaS::Connector::Definition
                           else
                             helpers.read_root_options(:query) || []
                           end
+          GqlArtifactCache.gql_seed_root_options(helpers.schema_cache_store, :query, query_options)
           helpers.build_query_static_object_field(schema, query_options.presence)
 
           # Define include_fields early so its value is resolved in the first pass,
@@ -371,7 +383,6 @@ class GraphqlConnector < IPaaS::Connector::Definition
            helpers.cacheable_selection?(:query) && helpers.schema_cache_read('gql_schema').present?
           schema_data = helpers.schema_cache_read('gql_schema')
           helpers.write_bundle_part(:query, 'in', helpers.build_query_in_bundle(schema_data, object_name, schema))
-          helpers.persist_root_options(schema_data, :query)
         end
       end
 
@@ -386,11 +397,9 @@ class GraphqlConnector < IPaaS::Connector::Definition
         else
           schema.field :object, 'Query object', :string,
                        hint: 'The GraphQL query field name.',
-                       notice: 'Outbound Connection is not configured correctly.',
-                       notice_type: 'error',
-                       notice_action: 'edit_connection',
                        pattern: /\A[A-Za-z][A-Za-z0-9]*\z/,
-                       required: true
+                       required: true,
+                       **helpers.selector_notice
         end
       end
 
@@ -747,6 +756,7 @@ class GraphqlConnector < IPaaS::Connector::Definition
                              else
                                helpers.read_root_options(:mutation) || []
                              end
+          GqlArtifactCache.gql_seed_root_options(helpers.schema_cache_store, :mutation, mutation_options)
           helpers.build_mutation_static_field(schema, mutation_options.presence)
 
           # Define include_fields early so its value is resolved in the first pass
@@ -773,7 +783,6 @@ class GraphqlConnector < IPaaS::Connector::Definition
           schema_data = helpers.schema_cache_read('gql_schema')
           helpers.write_bundle_part(:mutation, 'in',
                                     helpers.build_mutation_in_bundle(schema_data, mutation_name, schema))
-          helpers.persist_root_options(schema_data, :mutation)
         end
       end
 
@@ -788,11 +797,9 @@ class GraphqlConnector < IPaaS::Connector::Definition
         else
           schema.field :mutation, 'Mutation', :string,
                        hint: 'The GraphQL mutation name.',
-                       notice: 'Outbound Connection is not configured correctly.',
-                       notice_type: 'error',
-                       notice_action: 'edit_connection',
                        pattern: /\A[A-Za-z][A-Za-z0-9]*\z/,
-                       required: true
+                       required: true,
+                       **helpers.selector_notice
         end
       end
 
@@ -979,7 +986,13 @@ class GraphqlConnector < IPaaS::Connector::Definition
         begin
           helpers.ensure_schema_cached
         rescue StandardError => e
+          # Recorded, not re-raised: this runs during a schema build, so raising would take
+          # out the whole panel. The builders surface it on the selector instead.
           log("Schema introspection failed: #{e.message}")
+          if GqlArtifactCache.gql_read_schema_error(helpers.schema_cache_store).nil?
+            GqlArtifactCache.gql_write_schema_error(helpers.schema_cache_store, e.message,
+                                                    cause: :transient)
+          end
         end
       end
       context.regenerate_schema(context.output_schema(output_schema_ref)) if action.input&.[](selection_field).present?
@@ -995,6 +1008,7 @@ class GraphqlConnector < IPaaS::Connector::Definition
       fail_job!('No schema data available. Configure a schema source in the outbound connection.') if schema_data.blank?
 
       helpers.schema_cache_write('gql_schema', schema_data, 3600)
+      GqlArtifactCache.gql_clear_schema_error(helpers.schema_cache_store)
       schema_data
     end
 
@@ -1025,19 +1039,16 @@ class GraphqlConnector < IPaaS::Connector::Definition
       rescue IPaaS::Job::Outbound::CustomerCredentialsError => e
         # OAuth credential rejection (401/403/known-400) raises before any GraphQL
         # response. Deterministic config failure; server's responsibility that message is credential-free.
-        helpers.record_introspection_failure(e.message, INTROSPECTION_FAILURE_TTL)
+        helpers.record_introspection_failure(e.message, cause: :credentials)
       rescue IPaaS::Error => e
         # Other auth errors (e.g. a 5xx from the OAuth token endpoint) are transient.
-        helpers.record_introspection_failure(e.message, INTROSPECTION_TRANSIENT_FAILURE_TTL)
+        helpers.record_introspection_failure(e.message, cause: :transient)
       end
 
       if response.status != 200
-        # Bearer/api-key/no-auth connections make no token call, so a bad credential
-        # surfaces as a non-200 response. 4xx is deterministic; 5xx is transient.
-        deterministic = response.status >= 400 && response.status < 500
-        ttl = deterministic ? INTROSPECTION_FAILURE_TTL : INTROSPECTION_TRANSIENT_FAILURE_TTL
         helpers.record_introspection_failure("HTTP error from GraphQL API: #{response.status} " \
-                                             "'#{response.body}'", ttl)
+                                             "'#{response.body}'",
+                                             cause: GqlArtifactCache.gql_schema_error_cause(response.status))
       end
 
       schema_data = helpers.extract_data_from_graphql_response(response)['__schema']
@@ -1048,9 +1059,11 @@ class GraphqlConnector < IPaaS::Connector::Definition
     # Writes the bounded failure message to the negative cache keyed by the auth
     # tuple and fails the job with it. The message is capped because it is
     # re-logged on every cache hit for the TTL; the message never contains credentials.
-    helper :record_introspection_failure do |message, ttl|
+    helper :record_introspection_failure do |message, cause:|
+      ttl = cause == :transient ? INTROSPECTION_TRANSIENT_FAILURE_TTL : INTROSPECTION_FAILURE_TTL
       bounded = message.to_s[0, INTROSPECTION_FAILURE_MESSAGE_LIMIT]
       helpers.schema_cache_write(helpers.introspection_failure_cache_key, bounded, ttl)
+      GqlArtifactCache.gql_write_schema_error(helpers.schema_cache_store, bounded, cause: cause)
       fail_job!(bounded)
     end
 
@@ -1076,6 +1089,9 @@ class GraphqlConnector < IPaaS::Connector::Definition
       when 'bearer_token'
         bearer = config[:bearer_token] || {}
         [helpers.decrypt_present(bearer[:token])]
+      when 'basic_auth'
+        basic = config[:basic_auth] || {}
+        [basic[:username], helpers.decrypt_present(basic[:password])]
       when 'api_key_header'
         api_key = config[:api_key_header] || {}
         [api_key[:header_name], helpers.decrypt_present(api_key[:header_value])]
@@ -1146,12 +1162,6 @@ class GraphqlConnector < IPaaS::Connector::Definition
         selection_name: helpers.selection_value(operation),
         include_fields: helpers.resolved_include_fields, bundle: bundle,
       )
-    end
-
-    # Records the root-field options (selector enumeration) under the current generation
-    # so the warm input-schema build restores the selector without reading the schema.
-    helper :persist_root_options do |schema_data, operation|
-      helpers.write_root_options(operation, GqlSchema.gql_list_root_fields(schema_data, operation.to_s))
     end
 
     # ──────────────────────────────────────────────

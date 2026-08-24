@@ -166,4 +166,22 @@ describe IPaaS::Encryption::HashedCredential do
       expect(record.verify(parity_secret)).to be(true)
     end
   end
+
+  describe 'writing itself to YAML' do
+    let(:record) { described_class.derive('a' * described_class::MIN_PLAINTEXT_LENGTH) }
+
+    it 'writes a plain mapping rather than a native object tag' do
+      dumped = IPaaS::Connector::Common::Serializer.dump({ 'v' => record })
+
+      expect(dumped).not_to include('!ruby/object:')
+      expect(dumped).to include('salt:', 'hash:')
+    end
+
+    it 'reads back through the strict gate it writes for' do
+      dumped = IPaaS::Connector::Common::Serializer.dump({ 'v' => record })
+      reloaded = described_class.from_h!(IPaaS::Connector::Common::Serializer.parse(dumped)['v'])
+
+      expect(reloaded).to eq(record)
+    end
+  end
 end

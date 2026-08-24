@@ -265,6 +265,15 @@ describe IPaaS::Connector::Mapping::ResolvedMapping do
         .to contain_exactly("Field 'foo' code raised NoMethodError: undefined method '+' for nil")
     end
 
+    it 'should degrade a stack overflow in a proc into a field error instead of crashing' do
+      allow_any_instance_of(IPaaS::Connector::Common::ProcHelper)
+        .to receive(:execute_if_valid).and_raise(SystemStackError.new('stack level too deep'))
+      resolved = resolve_restricted([{ field_id: :foo, proc: '"x"' }])
+      expect(resolved).not_to be_valid
+      expect(resolved.errors[:base])
+        .to include("Field 'foo' code raised SystemStackError: stack level too deep")
+    end
+
     it 'should handle exceptions in procs in nested values' do
       resolved = resolve_restricted(
         [
@@ -1719,6 +1728,79 @@ describe IPaaS::Connector::Mapping::ResolvedMapping do
 
         expect(resolved).to eq(expected_result)
       end
+    end
+  end
+
+  context 'malformed :schema_field entries' do
+    let(:schema_field_schema) do
+      IPaaS::Connector::Schema.new('reference') do
+        field :out_schema, 'Output schema', :schema_field, array: true
+      end
+    end
+
+    def resolve_schema_fields(fixed)
+      resolve([{ field_id: :out_schema, fixed: fixed }], schema: schema_field_schema)
+    end
+
+    it 'flags a bare-string entry but still coerces it to a field' do
+      resolved = resolve_schema_fields(['noteText', { id: 'ok', label: 'Ok', type: 'string' }])
+      expect(resolved).not_to be_valid
+      expect(resolved.errors[:base]).to include(
+        "Schema entry 'out_schema[0]' must be an object with an id, label and type; it was treated as a text field.",
+      )
+      expect(resolved[:out_schema].map(&:id)).to eq([:noteText, :ok])
+    end
+
+    it 'flags blank and non-field entries as ignored' do
+      resolved = resolve_schema_fields(['', 42, nil])
+      expect(resolved).not_to be_valid
+      expect(resolved.errors[:base]).to include(
+        "Schema entry 'out_schema[0]' is not a valid field definition and was ignored.",
+        "Schema entry 'out_schema[1]' is not a valid field definition and was ignored.",
+        "Schema entry 'out_schema[2]' is not a valid field definition and was ignored.",
+      )
+    end
+
+    it 'does not flag well-formed entries' do
+      resolved = resolve_schema_fields([{ id: 'ok', label: 'Ok', type: 'string' }])
+      resolved.valid?
+      expect(resolved.errors[:base].grep(/Schema entry/)).to be_empty
+    end
+
+    it 'does not flag entries for non-schema_field array types' do
+      string_array_schema = IPaaS::Connector::Schema.new('reference') do
+        field :tags, 'Tags', :string, array: true
+      end
+      resolved = resolve([{ field_id: :tags, fixed: ['bare'] }], schema: string_array_schema)
+      resolved.valid?
+      expect(resolved.errors[:base].grep(/Schema entry/)).to be_empty
+    end
+  end
+
+  context 'unresolved values' do
+    let(:secret_schema) do
+      IPaaS::Connector::Schema.new('reference') do
+        field :token, 'Token', :secret_string
+        field :tokens, 'Tokens', :secret_string, array: true
+      end
+    end
+
+    let(:node) { unresolved_node('gAAAA_ciphertext==') }
+
+    it 'does not fabricate a typed value for a scalar field' do
+      resolved = resolve([{ field_id: :token, fixed: node }], schema: secret_schema)
+      expect(resolved[:token]).to be_nil
+    end
+
+    it 'does not fabricate a typed value for an array field' do
+      resolved = resolve([{ field_id: :tokens, fixed: node }], schema: secret_schema)
+      expect(resolved[:tokens]).to eq([])
+    end
+
+    it 'reports the load error on the mapping' do
+      resolved = resolve([{ field_id: :token, fixed: node }], schema: secret_schema)
+      expect(resolved).not_to be_valid
+      expect(resolved.errors[:base]).to include(node.message)
     end
   end
 end

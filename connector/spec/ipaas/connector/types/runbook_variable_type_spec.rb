@@ -18,7 +18,7 @@ describe IPaaS::Connector::Types::RunbookVariableType do
       foo_var = double(id: :foo)
       bar_var = double(id: :bar)
       variables = [foo_var, bar_var]
-      runbook_double = double(runbook_variables: variables)
+      runbook_double = double(defined_runbook_variables: variables)
       context = double(runbook: runbook_double)
 
       foo_var2 = subject.ruby_class.new.tap { |var| var.id = :foo }
@@ -34,7 +34,7 @@ describe IPaaS::Connector::Types::RunbookVariableType do
       foo_var = double(id: :foo)
       bar_var = double(id: :bar)
       variables = [baz_var, foo_var, bar_var]
-      runbook_double = double(runbook_variables: variables)
+      runbook_double = double(defined_runbook_variables: variables)
       context = double(runbook: runbook_double)
 
       expect(subject.resolve({ id: :foo }, context: context)).to eq(foo_var)

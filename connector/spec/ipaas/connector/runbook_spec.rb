@@ -376,6 +376,129 @@ describe IPaaS::Connector::Runbook do
       expect(runbook.errors[:runbook_variables]).to include("Runbook variable 'foo' is defined more than once")
     end
 
+    { default: 'Default', hint: 'Hint' }.each do |attr, label|
+      it "flags a runbook variable whose #{attr} could not be loaded" do
+        node = unresolved_node
+        IPaaS::Connector::Runbook.parse_runbook_variables(runbook, [
+          { id: :api_key, label: 'API Key', type: :secret_string, attr => node },
+        ])
+        expect(runbook).not_to be_valid
+        expect(runbook.errors[:runbook_variables])
+          .to include("Runbook variable 'api_key': #{label} #{node.message}")
+      end
+    end
+
+    [:creds, :fields].each do |parent_id|
+      it "flags a sub-field value that could not be loaded under a variable named #{parent_id}" do
+        node = unresolved_node
+        IPaaS::Connector::Runbook.parse_runbook_variables(runbook, [
+          {
+            id: parent_id, label: parent_id.to_s, type: :nested,
+            fields: [{ id: :token, label: 'Token', type: :secret_string, default: node }],
+          },
+        ])
+        expect(runbook).not_to be_valid
+        expect(runbook.errors[:runbook_variables])
+          .to include("Runbook variable '#{parent_id}': Field (token) invalid: Default #{node.message}")
+      end
+    end
+
+    {
+      'an enumeration on a hash type' => { id: :picker, label: 'Picker', type: :hash,
+                                           enumeration: [{ id: 'a', label: 'A' }], },
+      'no label' => { id: :nameless, type: :string },
+      'an id over 40 characters' => { id: :"#{'x' * 41}", label: 'Long', type: :string },
+      'an unrecognised type' => { id: :odd, label: 'Odd', type: :not_a_type },
+      'a scalar default on an array' => { id: :many, label: 'Many', type: :string, array: true, default: 'one' },
+      'a non-numeric default on an integer' => { id: :count, label: 'Count', type: :integer, default: 'abc' },
+    }.each do |shape, variable|
+      it "leaves the runbook valid when a variable has #{shape} and no unloadable value" do
+        IPaaS::Connector::Runbook.parse_runbook_variables(runbook, [variable])
+
+        expect(runbook).to be_valid
+        expect(runbook.runbook_variables.first).not_to be_valid
+      end
+    end
+
+    it 'flags the runbook when the same variable also holds an unloadable value' do
+      node = unresolved_node
+      IPaaS::Connector::Runbook.parse_runbook_variables(runbook, [
+        { id: :picker, label: 'Picker', type: :hash, enumeration: [{ id: 'a', label: 'A' }], default: node },
+      ])
+
+      expect(runbook).not_to be_valid
+      expect(runbook.errors[:runbook_variables].join(' ')).to include(node.message)
+    end
+
+    [:hashed_credential, :recurrence, :date_time, :schema_field].each do |type|
+      it "names the field when a #{type} variable stores a placeholder among its subfields" do
+        node = unresolved_node
+        IPaaS::Connector::Runbook.parse_runbook_variables(runbook, [
+          { id: :cred, label: 'Cred', type: type, fields: [node] },
+        ])
+
+        expect(runbook).not_to be_valid
+        expect(runbook.errors[:runbook_variables].join(' ')).to include(node.message)
+      end
+    end
+
+    it 'leaves a nested variable holding a placeholder reported exactly once' do
+      node = unresolved_node
+      IPaaS::Connector::Runbook.parse_runbook_variables(runbook, [
+        { id: :group, label: 'Group', type: :nested, fields: [node] },
+      ])
+
+      expect(runbook).not_to be_valid
+      expect(runbook.runbook_variables.first.errors[:fields].count(node.message)).to eq(1)
+    end
+
+    it 'keeps a healthy subfield readable when it shares an array with a placeholder' do
+      node = unresolved_node
+      IPaaS::Connector::Runbook.parse_runbook_variables(runbook, [
+        { id: :group, label: 'Group', type: :nested,
+          fields: [{ id: :ok, label: 'OK', type: :string }, node], },
+      ])
+
+      dumped = IPaaS::Connector::Common::Serializer.dump(runbook.runbook_variables.first.to_h_ref)
+
+      expect(dumped).not_to include('!ruby/object:IPaaS::Connector::Schema::Field')
+      expect(dumped).to include('gAAAA_blob==')
+    end
+
+    it 'reports two unloadable ids separately rather than as a duplicate declaration' do
+      IPaaS::Connector::Runbook.parse_runbook_variables(runbook, [
+        { id: unresolved_node, label: 'First', type: :string },
+        { id: unresolved_node, label: 'Second', type: :string },
+      ])
+
+      expect(runbook).not_to be_valid
+      expect(runbook.errors[:runbook_variables].join(' ')).not_to include('is defined more than once')
+    end
+
+    it 'keeps an unresolved concurrency type instead of naming it after the error' do
+      yaml = "uuid: 7f000000-0000-4000-8000-000000000002\nname: RB\nconcurrency:\n  " \
+             "type: !ruby/object:#{UnresolvedNodeHelper::UNPERMITTED_CLASS}\n    " \
+             "encrypted: gAAAA_secret==\n    encryptor:\n"
+
+      parsed = IPaaS::Connector::Runbook.parse(yaml, tolerant: true)
+      expect(parsed.concurrency[:type]).to be_a(IPaaS::Connector::Common::UnresolvedNode)
+      expect(IPaaS::Connector::Common::Serializer.dump(parsed.to_h)).to include('gAAAA_secret==')
+
+      parsed.valid?
+      expect(parsed.errors[:concurrency]).to include(parsed.concurrency[:type].message)
+    end
+
+    it 'parses rather than raises when a runbook variable type could not be loaded' do
+      yaml = "uuid: 7f000000-0000-4000-8000-000000000001\nname: RB\nrunbook_variables:\n" \
+             "- id: api_key\n  label: API Key\n  " \
+             "type: !ruby/object:#{UnresolvedNodeHelper::UNPERMITTED_CLASS}\n    " \
+             "encrypted: gAAAA_x==\n    encryptor:\n"
+
+      parsed = nil
+      expect { parsed = IPaaS::Connector::Runbook.parse(yaml, tolerant: true) }.not_to raise_error
+      expect(parsed.runbook_variables.first.type).to be_a(IPaaS::Connector::Common::UnresolvedNode)
+    end
+
     describe 'variable_field' do
       it 'should retrieve a runbook variable field (definition)' do
         foo_field = runbook.runbook_variables.first
@@ -1041,6 +1164,42 @@ describe IPaaS::Connector::Runbook do
         expect(result[:items][2]).to be_a(IPaaS::Encryption::SecretString)
         expect(result[:metadata][:secret]).to be_a(IPaaS::Encryption::SecretString)
         expect(result[:metadata][:public]).to eq(plain_string)
+      end
+
+      it 'converts a secret_string declared only below a nested field' do
+        runbook.job_state = ActiveSupport::Cache::MemoryStore.new
+
+        action = runbook.actions.first
+        allow(action).to receive(:output_schemas).and_return([
+          IPaaS::Connector::Schema.new('test-output') do
+            field :name, 'Name', :string
+            field :metadata, 'Metadata', :nested do
+              field :secret, 'Secret', :secret_string
+            end
+          end,
+        ])
+
+        output = { name: plain_string, metadata: { secret: encrypted_string } }
+        runbook.store_action_output(action.reference, output)
+
+        result = runbook.action_output(action.reference)
+        expect(result[:metadata][:secret]).to be_a(IPaaS::Encryption::SecretString)
+      end
+
+      it 'skips the rebuild when no field declares a secret_string' do
+        runbook.job_state = ActiveSupport::Cache::MemoryStore.new
+
+        action = runbook.actions.first
+        allow(action).to receive(:output_schemas).and_return([
+          IPaaS::Connector::Schema.new('test-output') do
+            field :name, 'Name', :string
+          end,
+        ])
+
+        runbook.store_action_output(action.reference, { name: plain_string })
+
+        expect(runbook).not_to receive(:reconstruct_secret_strings)
+        expect(runbook.action_output(action.reference)).to eq({ name: plain_string })
       end
     end
   end

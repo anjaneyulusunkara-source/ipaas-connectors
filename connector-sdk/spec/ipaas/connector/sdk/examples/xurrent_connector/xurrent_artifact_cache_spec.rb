@@ -66,7 +66,7 @@ describe 'Xurrent Artifact Cache', :action do
   describe 'shape-incompatible bundle' do
     # The 'in' key for object 'people' with no include_fields under the current generation.
     def in_bundle_key
-      gen = outbound_connection.cache_read('gql_bundle_gen')
+      gen = IPaaS::Job::GraphQL::ArtifactCache.gql_bundle_generation(outbound_connection)
       digest = Digest::SHA256.hexdigest(['query', 'people', '{}'].join("\n"))
       "gql_bundle_in_#{gen}_#{digest}"
     end
@@ -159,10 +159,10 @@ describe 'Xurrent Artifact Cache', :action do
     it 'is ignored so a missing schema still re-introspects rather than returning nil' do
       warm_the_bundle
 
-      # Simulate a pre-upgrade leftover: schema payload and bundle generation gone (so the
-      # cold path runs, not the warm bundle), the old marker remains. It must re-introspect.
+      # Simulate a pre-upgrade leftover: schema payload gone and the derived caches orphaned
+      # (so the cold path runs, not the warm bundle), the old marker remains. Must re-introspect.
       outbound_connection.cache_clear('gql_schema')
-      outbound_connection.cache_clear('gql_bundle_gen')
+      IPaaS::Job::GraphQL::ArtifactCache.gql_bump_bundle_generation(outbound_connection)
       outbound_connection.cache_write('_schema_present', true, 3600)
       WebMock.reset!
       introspection_stub = stub_introspection
@@ -182,7 +182,7 @@ describe 'Xurrent Artifact Cache', :action do
       # Evict the root-field options but keep the bundle, generation, and schema: the
       # build must not serve an empty selector — it fails closed on the missing options
       # and rebuilds the enumeration from the still-cached schema, without introspecting.
-      gen = outbound_connection.cache_read('gql_bundle_gen')
+      gen = IPaaS::Job::GraphQL::ArtifactCache.gql_bundle_generation(outbound_connection)
       outbound_connection.cache_clear("gql_root_fields_query_#{gen}")
       WebMock.reset! # no introspection stub: the schema is still cached
 

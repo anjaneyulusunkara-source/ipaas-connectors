@@ -69,8 +69,32 @@ class HttpConnector < IPaaS::Connector::Definition
       | `method` | Enum | Yes | - | One of `HEAD`, `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `TRACE` |
       | `path` | String | No | - | Sub-path appended to the connection's **Base URL** (e.g. `/users/1`). Allowed characters match `[A-Za-z0-9\\-._~!$&'()*+,;=:@%/]`; put query strings in `query_parameters` and URL fragments (`#...`) are not supported. |
       | `headers` | Array of `{name, value}` | No | `[]` | Request headers. Header names must match `[A-Za-z0-9\\-_]+`. The connector joins repeated names into a single comma-separated value. |
-      | `query_parameters` | Array of `{name, value}` | No | `[]` | Query-string parameters. Names may include `[` and `]` for APIs using `filter[field]`-style keys. The connector appends `[]` to repeated names: two `q` entries become `q[]=A&q[]=B` on the wire. To send a target API a bare repeated parameter, encode the values yourself in a single entry. |
+      | `query_parameters` | Array of `{name, value, already_encoded}` | No | `[]` | Query-string parameters. Names may include `$` for OData system parameters (e.g. Microsoft Graph's `$filter`, `$top`, `$skiptoken`) and `[` and `]` for APIs using `filter[field]`-style keys. Names are percent-encoded on the wire, so `$filter` is sent as `%24filter`. The connector appends `[]` to repeated names: two `q` entries become `q[]=A&q[]=B` on the wire. Set `already_encoded` on an entry whose value is already percent-encoded, such as one lifted from a signed URL, so it is not escaped a second time. See **Already-encoded values**. |
       | `body` | Binary | No | - | Raw request body. The connector does not auto-serialise. Send JSON by setting a `Content-Type: application/json` header and a stringified JSON body. |
+
+      #### Already-encoded values
+      Set `already_encoded` on an entry whose value is already percent-encoded, typically one lifted
+      out of a signed URL (CloudFront, S3, Azure SAS), whose signature is computed over the literal
+      query string. Existing escapes are then preserved exactly: `%3B` stays `%3B` and `+` stays `+`.
+
+      Four things change for the whole request once any entry sets it:
+
+      - Parameters are normally sorted by name on the wire. With `already_encoded` in play the query
+        string keeps the order you listed the entries in, which is what signature validation needs.
+        Repeats group at the first entry with that name, so `q=A, x=V, q=B` is sent as `q=A&q=B&x=V`.
+      - An `already_encoded` entry is never `[]`-expanded, and that applies to its whole group: an
+        entry sharing its name loses the `[]` too.
+      - A connection whose credential is placed in **Query params** contributes that parameter first,
+        ahead of the entries you list, so such a connection cannot be combined with a signed URL.
+      - A parameter grouped with an `already_encoded` entry must be a scalar; a nested object or
+        array there fails the request rather than being sent in a different shape.
+
+      An `already_encoded` value is rejected, with a message naming the character and its position,
+      when it contains a bare `&` or `;` (either would split it into further parameters), a tab,
+      carriage return or newline (the URL layer deletes these silently), or a `%` that is not
+      followed by two hex digits. Use `%26`, `%3B`, `%09`, `%0D`, `%0A` or `%25` for one that belongs
+      to the value. A literal space or `#` is still escaped to `%20` or `%23`, since the result has
+      to be a legal URL query.
 
       #### Defaults
       The connector sends `User-Agent: Xurrent iPaaS` on every request. Override it by adding a `User-Agent` entry to `headers`.
@@ -92,7 +116,7 @@ class HttpConnector < IPaaS::Connector::Definition
       | Field | Type | Required | Description |
       |---|---|---|---|
       | `response.status` | Integer | Yes | HTTP status code |
-      | `response.headers` | Array of `{name, value}` | No | One entry per response header name. When the response repeats a header name, the connector combines the values into a single comma-joined `value` per RFC 9110 §5.3. |
+      | `response.headers` | Array of `{name, value}` | No | One entry per response header name. When the response repeats a header name, the connector combines the values into a single comma-joined `value` per RFC 9110 §5.3. A header the server sends with an empty field value is returned with an empty string `value`, not dropped. |
       | `response.body` | Binary | No | Raw response body |
 
       #### Example Output
@@ -178,8 +202,35 @@ class HttpConnector < IPaaS::Connector::Definition
         | `method` | Enum | Yes | - | One of `HEAD`, `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `TRACE` |
         | `path` | String | No | - | Sub-path appended to the connection's **Base URL** (e.g. `/users/1`). Allowed characters match `[A-Za-z0-9\\-._~!$&'()*+,;=:@%/]`; put query strings in `query_parameters` and URL fragments (`#...`) are not supported. |
         | `headers` | Array of `{name, value}` | No | `[]` | Request headers. Header names must match `[A-Za-z0-9\\-_]+`. The connector joins repeated names into a single comma-separated value. |
-        | `query_parameters` | Array of `{name, value}` | No | `[]` | Query-string parameters. Names may include `[` and `]` for APIs using `filter[field]`-style keys. The connector appends `[]` to repeated names: two `q` entries become `q[]=A&q[]=B` on the wire. To send a target API a bare repeated parameter, encode the values yourself in a single entry. |
+        | `query_parameters` | Array of `{name, value, already_encoded}` | No | `[]` | Query-string parameters. Names may include `$` for OData system parameters (e.g. Microsoft Graph's `$filter`, `$top`, `$skiptoken`) and `[` and `]` for APIs using `filter[field]`-style keys. Names are percent-encoded on the wire, so `$filter` is sent as `%24filter`. The connector appends `[]` to repeated names: two `q` entries become `q[]=A&q[]=B` on the wire. Set `already_encoded` on an entry whose value is already percent-encoded, such as one lifted from a signed URL, so it is not escaped a second time. See **Already-encoded values**. |
         | `body` | Binary | No | - | Raw request body. The connector does not auto-serialise. Send JSON by setting a `Content-Type: application/json` header and a stringified JSON body. |
+
+        ### Already-encoded values
+        Set `already_encoded` on an entry whose value is already percent-encoded, typically one
+        lifted out of a signed URL (CloudFront, S3, Azure SAS), whose signature is computed over the
+        literal query string. Existing escapes are then preserved exactly: `%3B` stays `%3B` and `+`
+        stays `+`.
+
+        Four things change for the whole request once any entry sets it:
+
+        - Parameters are normally sorted by name on the wire. With `already_encoded` in play the
+          query string keeps the order you listed the entries in, which is what signature validation
+          needs. Repeats group at the first entry with that name, so `q=A, x=V, q=B` is sent as
+          `q=A&q=B&x=V`.
+        - An `already_encoded` entry is never `[]`-expanded, and that applies to its whole group: an
+          entry sharing its name loses the `[]` too.
+        - A connection whose credential is placed in **Query params** contributes that parameter
+          first, ahead of the entries you list, so such a connection cannot be combined with a
+          signed URL.
+        - A parameter grouped with an `already_encoded` entry must be a scalar; a nested object or
+          array there fails the request rather than being sent in a different shape.
+
+        An `already_encoded` value is rejected, with a message naming the character and its
+        position, when it contains a bare `&` or `;` (either would split it into further
+        parameters), a tab, carriage return or newline (the URL layer deletes these silently), or a
+        `%` that is not followed by two hex digits. Use `%26`, `%3B`, `%09`, `%0D`, `%0A` or `%25`
+        for one that belongs to the value. A literal space or `#` is still escaped to `%20` or
+        `%23`, since the result has to be a legal URL query.
 
         ### Defaults
         The connector sends `User-Agent: Xurrent iPaaS` on every request. Override it by adding a `User-Agent` entry to `headers`.
@@ -201,7 +252,7 @@ class HttpConnector < IPaaS::Connector::Definition
         | Field | Type | Required | Description |
         |---|---|---|---|
         | `response.status` | Integer | Yes | HTTP status code |
-        | `response.headers` | Array of `{name, value}` | No | One entry per response header name. When the response repeats a header name, the connector combines the values into a single comma-joined `value` per RFC 9110 §5.3. |
+        | `response.headers` | Array of `{name, value}` | No | One entry per response header name. When the response repeats a header name, the connector combines the values into a single comma-joined `value` per RFC 9110 §5.3. A header the server sends with an empty field value is returned with an empty string `value`, not dropped. |
         | `response.body` | Binary | No | Raw response body |
 
         ### Example Output
@@ -260,10 +311,17 @@ class HttpConnector < IPaaS::Connector::Definition
                 'Query parameter name',
                 :string,
                 required: true,
-                pattern: /\A[A-Za-z0-9\-_\[\]]+\z/
+                pattern: /\A[A-Za-z0-9$\-_\[\]]+\z/
           field :value,
                 'Value',
                 :string
+          field :already_encoded,
+                'Value is already encoded',
+                :boolean,
+                default: false,
+                visibility: 'optional',
+                hint: 'Turn on for a value that is already percent-encoded, such as one lifted from a ' \
+                      'signed URL, so it is not escaped a second time.'
         end
         field :body,
               'Body',
@@ -289,8 +347,7 @@ class HttpConnector < IPaaS::Connector::Definition
                   pattern: /[A-Za-z0-9\-_]+/
             field :value,
                   'Value',
-                  :string,
-                  required: true
+                  :string
           end
           field :body,
                 'Body',
@@ -318,6 +375,10 @@ class HttpConnector < IPaaS::Connector::Definition
         params = action.input[:query_parameters]&.each_with_object({}) do |name_value, h|
           param_name = name_value[:name]
           param_value = name_value[:value]
+          # A whole-array mapping arrives uncast, so the toggle can still be a string here.
+          if name_value[:already_encoded].to_s.strip.downcase == 'true' && !param_value.nil?
+            param_value = IPaaS::Job::Outbound::HTTP.raw_param_value(param_value)
+          end
           h[param_name] = if h.key?(param_name)
                             Array(h[param_name]) + [param_value]
                           else

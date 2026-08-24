@@ -174,7 +174,7 @@ module IPaaS
 
                 fields
               end
-            end
+            end.tap { |schema| schema.shared = true }
           end
         end
       end

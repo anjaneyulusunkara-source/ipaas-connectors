@@ -5,6 +5,21 @@ module IPaaS
         include IPaaS::Connector::Common::Model
 
         DYNAMIC_MAPPING_TYPES = [:proc, :variable, :runbook_variable, :nested].freeze
+        COERCED_SCHEMA_FIELD_MSG =
+          "Schema entry '%<field>' must be an object with an id, label and type; it was treated as a text field.".freeze
+        IGNORED_SCHEMA_FIELD_MSG =
+          "Schema entry '%<field>' is not a valid field definition and was ignored.".freeze
+
+        class << self
+          attr_accessor :resolution_observer
+
+          def tracking_resolution(context, &block)
+            observer = resolution_observer
+            return yield unless observer
+
+            observer.call(context, &block)
+          end
+        end
 
         attr_accessor :context, :base_error
         attribute :fields, type: [IPaaS::Connector::Schema::Field]
@@ -51,6 +66,8 @@ module IPaaS
           return add_resolved_array(field, resolved_value) if field.array
 
           mapping_error(field, "Field '%<field>' is mapped twice.") if self.key?(field.id)
+          return flag_unresolved(field, resolved_value) if unresolved_value?(resolved_value)
+
           resolved_value = field.type_def.resolve(resolved_value, context: context)
           validate_field(field, resolved_value)
           self[field.id] = resolved_value
@@ -58,12 +75,42 @@ module IPaaS
 
         def add_resolved_array(field, resolved_value)
           resolved_value = [resolved_value] unless resolved_value.is_a?(Array)
-          resolved_values = resolved_value.each_with_index.map do |element_value, index|
-            field.type_def.resolve(element_value, context: context).tap do |resolved_element_value|
-              validate_field(field, resolved_element_value, field_designator: "#{field.id}[#{index}]")
-            end
+          resolved_values = resolved_value.each_with_index.filter_map do |element_value, index|
+            resolve_array_element(field, element_value, index)
           end
           self[field.id] = (self[field.id] || []) + resolved_values
+        end
+
+        def resolve_array_element(field, element_value, index)
+          designator = "#{field.id}[#{index}]"
+          return flag_unresolved(field, element_value, designator) if unresolved_value?(element_value)
+
+          flag_malformed_schema_field(field, element_value, index)
+          field.type_def.resolve(element_value, context: context).tap do |resolved_element_value|
+            validate_field(field, resolved_element_value, field_designator: designator)
+          end
+        end
+
+        def unresolved_value?(value)
+          IPaaS::Connector::Common::UnresolvedNode.within?(value)
+        end
+
+        def flag_unresolved(field, value, field_designator = nil)
+          unresolved_nodes(value).each { |node| mapping_error(field, node.message, field_designator) }
+          nil
+        end
+
+        def unresolved_nodes(value)
+          IPaaS::Connector::Common::UnresolvedNode.all_within(value)
+        end
+
+        def flag_malformed_schema_field(field, element_value, index)
+          return unless field.type_def == IPaaS::Connector::Types::SchemaFieldType
+          return if element_value.is_a?(Hash) || element_value.is_a?(IPaaS::Connector::Schema::Field)
+
+          coerced = (element_value.is_a?(String) || element_value.is_a?(Symbol)) && element_value.to_s.present?
+          message = coerced ? COERCED_SCHEMA_FIELD_MSG : IGNORED_SCHEMA_FIELD_MSG
+          mapping_error(field, message, "#{field.id}[#{index}]")
         end
 
         def resolve_default_fields
@@ -134,13 +181,16 @@ module IPaaS
         end
 
         def resolve_proc(field, proc, params = nil, attribute: nil)
-          log_attribute = "#{attribute} " if attribute.present?
-          on_invalid = ->(msg) { mapping_error(field, "Field '%<field>' #{log_attribute}code invalid: #{msg}") }
-          proc_helper = IPaaS::Connector::Common::ProcHelper.new(context, proc, on_invalid: on_invalid)
-          begin
-            proc_helper.execute_if_valid(*params)
-          rescue StandardError => e
-            mapping_error(field, "Field '%<field>' #{log_attribute}code raised #{e.class}: #{e.message}")
+          ResolvedMapping.tracking_resolution(context) do
+            log_attribute = "#{attribute} " if attribute.present?
+            on_invalid = ->(msg) { mapping_error(field, "Field '%<field>' #{log_attribute}code invalid: #{msg}") }
+            proc_helper = IPaaS::Connector::Common::ProcHelper.new(context, proc, on_invalid: on_invalid)
+            begin
+              proc_helper.execute_if_valid(*params)
+            # SystemStackError is not a StandardError; catch it so a self-referential proc degrades to a field error.
+            rescue StandardError, SystemStackError => e
+              mapping_error(field, "Field '%<field>' #{log_attribute}code raised #{e.class}: #{e.message}")
+            end
           end
         end
 

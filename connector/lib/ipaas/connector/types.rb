@@ -79,9 +79,11 @@ module IPaaS
 
             # Helper method for nested types to generate the sample based on the nested fields
             def fields_example(fields)
-              fields.compact.to_h do |f|
+              fields.filter_map do |f|
+                next unless f.is_a?(IPaaS::Connector::Schema::Field)
+
                 [f.id, f.example]
-              end
+              end.to_h
             end
           end
         end

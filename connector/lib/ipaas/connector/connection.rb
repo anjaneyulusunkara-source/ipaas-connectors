@@ -33,14 +33,14 @@ module IPaaS
       validate :config_mapping_valid?
 
       class << self
-        def parse(connection)
-          hash = IPaaS::Connector::Common::Serializer.parse(connection, with_uuid: true)
+        def parse(connection, resolve: true, tolerant: false)
+          hash = IPaaS::Connector::Common::Serializer.parse(connection, with_uuid: true, tolerant: tolerant)
           raise IPaaS::Error, 'Connection must be a hash.' unless hash.is_a?(Hash)
           hash = hash.deep_symbolize_keys
 
           Connection.new(hash[:uuid]).tap do |new_connection|
             copy_connection_values(new_connection, hash)
-            new_connection.valid? # triggers resolve
+            new_connection.valid? if resolve # triggers resolve
           end
         end
 
@@ -48,7 +48,7 @@ module IPaaS
 
         def copy_connection_values(connection, hash)
           connection.name = hash[:name]
-          connection.direction = hash[:direction]&.to_sym
+          connection.direction = IPaaS::Connector::Common::UnresolvedNode.symbolize(hash[:direction])
           connection.description = hash[:description]
           connection.connector = IPaaS::Connector.by_uuid(hash.dig(:connector, :uuid))
           connection.config_mapping = Array(hash[:config_mapping]).map do |cm|
@@ -83,9 +83,11 @@ module IPaaS
       def config(resolve: false)
         return @config if defined?(@config) && !resolve
 
-        config_schema.resolve(self, config_mapping) do |values|
+        @config = nil # Prevents infinite recursion when a config proc references config; see https://xurrent-support.xurrent.com/requests/80551553
+        result = config_schema.resolve(self, config_mapping) do |values|
           @config = values
         end
+        @config ||= result
       end
 
       def inbound?
@@ -206,9 +208,8 @@ module IPaaS
       def config_mapping_valid?
         return unless connector && (inbound? || outbound?)
         return if IPaaS::Connector::Mapping.invalid_mapping?(self, :config_mapping)
-        return if config.valid?
 
-        errors.add(:config_mapping, "invalid: #{config.full_error_messages}")
+        report_mapping_validity(:config_mapping, config)
       end
     end
   end

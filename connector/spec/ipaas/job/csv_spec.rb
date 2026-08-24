@@ -322,6 +322,39 @@ describe IPaaS::Job::Csv do
       end
     end
 
+    context 'trailing lines after exactly the safety cap of rows' do
+      before { stub_const('IPaaS::Job::Csv::MAX_ROWS', 3) }
+
+      it 'is not truncated for a run of blank lines' do
+        expect(described_class.parse("h\na\nb\nc\n\n\n")[:truncated]).to be(false)
+      end
+
+      # Windows and Excel exports are CRLF, and whether skip_blanks treats \r\n as blank
+      # is the gem internal this no longer depends on.
+      it 'is not truncated for a CRLF blank line' do
+        expect(described_class.parse("h\r\na\r\nb\r\nc\r\n\r\n")[:truncated]).to be(false)
+      end
+
+      it 'is not truncated without a header row' do
+        expect(described_class.parse("a\nb\nc\n\n", headers: false)[:truncated]).to be(false)
+      end
+
+      # Under-reporting truncation is invisible to the customer, so stopping at the first
+      # blank line must not let a file with dropped rows look complete.
+      it 'is truncated when blank lines separate the cap from a real row' do
+        expect(described_class.parse("h\na\nb\nc\n\n\nd\n")[:truncated]).to be(true)
+      end
+
+      # csv counts a line holding whitespace or a lone separator as a row, not a blank.
+      it 'is truncated for a whitespace-only line' do
+        expect(described_class.parse("h\na\nb\nc\n \n")[:truncated]).to be(true)
+      end
+
+      it 'is truncated for a separator-only line' do
+        expect(described_class.parse("h\na\nb\nc\n,\n")[:truncated]).to be(true)
+      end
+    end
+
     context 'blank lines within the data' do
       subject(:result) { described_class.parse("a,b\n1,2\n\n3,4\n") }
 
@@ -358,6 +391,13 @@ describe IPaaS::Job::Csv do
 
       it 'parses a field exactly at the limit' do
         expect(described_class.parse(%("#{'a' * 5}"\n), headers: false)[:rows]).to eq([['aaaaa']])
+      end
+
+      it 'flags truncation instead of raising when the oversized field is beyond the cap' do
+        stub_const('IPaaS::Job::Csv::MAX_ROWS', 3)
+        result = described_class.parse(%(h\na\nb\nc\n"#{'a' * 50}"\n))
+        expect(result[:rows]).to eq([['a'], ['b'], ['c']])
+        expect(result[:truncated]).to be(true)
       end
     end
 

@@ -40,7 +40,7 @@ module IPaaS
       validate :outbound_connection_valid?
 
       class << self
-        def parse(runbook, action)
+        def parse(runbook, action, resolve: true)
           raise IPaaS::Error, 'Action must have a runbook.' unless runbook
           hash = IPaaS::Connector::Common::Serializer.parse(action)
           raise IPaaS::Error, 'Action must be a hash.' unless hash.is_a?(Hash)
@@ -50,7 +50,7 @@ module IPaaS
           Action.new(hash[:reference]).tap do |new_action|
             copy_action_values(new_action, hash)
             new_action.runbook = runbook
-            new_action.valid? # triggers resolve
+            new_action.valid? if resolve # triggers resolve
           end
         end
 
@@ -420,14 +420,14 @@ module IPaaS
         # resolve); it is nil before the first resolve and if a prior resolve raised.
         return if @input&.valid?
 
-        # In execution mode the parse-time memo may have frozen a degraded dynamic
-        # schema (e.g. introspection unavailable at parse time), so re-resolve
-        # against the live schema before rejecting. Designer mode keeps the memo to
-        # avoid eager introspection in the builder.
-        resolved = execution_mode? ? input(resolve: true) : input
-        return if resolved.valid?
+        report_mapping_validity(:input_mapping, input_for_validation, runbook)
+      end
 
-        errors.add(:input_mapping, "invalid: #{resolved.full_error_messages}")
+      # In execution mode the parse-time memo may have frozen a degraded dynamic schema (e.g.
+      # introspection unavailable at parse time), so re-resolve against the live schema before
+      # rejecting. Designer mode keeps the memo to avoid eager introspection in the builder.
+      def input_for_validation
+        execution_mode? ? input(resolve: true) : input
       end
 
       def execution_mode?
@@ -436,6 +436,7 @@ module IPaaS
 
       def outbound_connection_valid?
         return unless outbound_connection
+        return if outbound_connection.unresolved?
         return if outbound_connection.valid?
 
         errors.add(:outbound_connection, "invalid: #{outbound_connection.full_error_messages}")

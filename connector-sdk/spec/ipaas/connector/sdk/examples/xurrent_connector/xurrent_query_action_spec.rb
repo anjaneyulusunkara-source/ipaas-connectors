@@ -277,9 +277,9 @@ describe 'Xurrent Query Action', :action do
 
     it 'fetches schema via introspection when cache is empty' do
       @query_action.outbound_connection.cache_clear('gql_schema')
-      # Clear the generation token too: without it the warm bundle would serve the
-      # build and run without introspecting, so a truly empty cache has no generation.
-      @query_action.outbound_connection.cache_clear('gql_bundle_gen')
+      # Orphan the derived caches too, or the warm bundle would serve the build and run
+      # without introspecting.
+      IPaaS::Job::GraphQL::ArtifactCache.gql_bump_bundle_generation(@query_action.outbound_connection)
 
       introspection_stub = stub_introspection
       @query_action.run
@@ -362,9 +362,9 @@ describe 'Xurrent Query Action', :action do
       first.run
 
       outbound_connection.cache_clear('gql_schema')
-      # Also drop the generation token, or the warm bundle would let the second action
-      # build and run without introspecting; clearing it forces the cold path.
-      outbound_connection.cache_clear('gql_bundle_gen')
+      # Also orphan the derived caches, or the warm bundle would let the second action
+      # build and run without introspecting.
+      IPaaS::Job::GraphQL::ArtifactCache.gql_bump_bundle_generation(outbound_connection)
 
       sibling_query_action('action-two').run
 

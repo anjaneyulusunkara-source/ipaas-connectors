@@ -200,6 +200,22 @@ describe IPaaS::Connector::Trigger do
         expect(invalid_trigger.errors[:config_mapping]).to include(message)
       end
 
+      it 'does not recurse when a config mapping references config' do
+        self_referential = IPaaS::Connector::Trigger.parse(
+          runbook,
+          {
+            description: 'Test description',
+            inbound_connection: { uuid: inbound_connection.uuid },
+            trigger_template: { uuid: connector.trigger('unique-trigger-id').uuid },
+            config_mapping: [
+              { field_id: 'root_key', proc: 'config[:root_key]' },
+            ],
+          }.to_yaml
+        )
+        expect { self_referential.valid? }.not_to raise_error
+        expect(self_referential.config[:root_key]).to be_nil
+      end
+
       it 'should validate the generated output schema' do
         @root_key = 'output_schema_error'
         expect(trigger).not_to be_valid

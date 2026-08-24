@@ -70,4 +70,42 @@ describe IPaaS::Encryption::SecretString do
     expect(secret_string).to be_blank
     expect(secret_string.inspect).to be_nil
   end
+
+  describe 'encode_with' do
+    it 'dumps the ciphertext as a plain scalar, not a tagged object' do
+      secret_string = described_class.new('gAAAA_blob==')
+
+      expect(secret_string.to_yaml).to eq("--- gAAAA_blob==\n")
+    end
+
+    it 'dumps a nil ciphertext back to nil rather than an empty string' do
+      dumped = described_class.new(nil).to_yaml
+
+      expect(dumped).not_to include('!ruby/object:')
+      expect(YAML.load(dumped)).to be_nil
+    end
+
+    it 'keeps the encryptor and its key provider out of the dump' do
+      provider = IPaaS::Encryption::SystemKeyProvider.new(
+        {}, nil, 'system-42', 'arn:aws:kms:eu-west-1:1234:key/abcd'
+      )
+      secret_string = described_class.new('gAAAA_blob==', IPaaS::Encryption::Encryptor.new(provider))
+
+      expect(secret_string.to_yaml).not_to include('Encryptor', 'key_provider', 'abcd', 'system-42')
+    end
+
+    it 'lets a runbook variable holding a secret default load back under strict parsing' do
+      field = IPaaS::Connector::Schema::Field.new(id: :api_key, label: 'API Key', type: :secret_string)
+      field.default = 'gAAAA_blob=='
+      yaml = field.to_h_ref.to_yaml
+
+      expect(yaml).not_to include('!ruby/object:')
+      reloaded = IPaaS::Connector::Schema::Field.new(
+        **IPaaS::Connector::Common::Serializer.parse(yaml)
+      )
+      expect(reloaded.default).to be_a(described_class)
+      expect(reloaded.default.encrypted).to eq('gAAAA_blob==')
+      expect(reloaded.to_h_ref.to_yaml).to eq(yaml)
+    end
+  end
 end

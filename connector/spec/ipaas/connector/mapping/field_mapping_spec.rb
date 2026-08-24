@@ -373,4 +373,50 @@ describe IPaaS::Connector::Mapping::FieldMapping do
       expect(mapping.uses_runbook_variables?).to be false
     end
   end
+
+  describe 'unresolved values' do
+    let(:node) { unresolved_node }
+
+    it 'marks the mapping invalid with the load error' do
+      mapping = IPaaS::Connector::Mapping::FieldMapping.new.tap do |m|
+        m.field_id = :api_key
+        m.fixed = node
+      end
+      expect(mapping).not_to be_valid
+      expect(mapping.errors[:fixed]).to include(node.message)
+    end
+
+    [
+      ['a Hash', ->(n) { { 'sub' => n } }],
+      ['an Array', ->(n) { [n] }],
+      ['a hash key', ->(n) { { n => 'v' } }],
+      ['a deep container', ->(n) { { 'a' => [{ 'b' => n }] } }],
+    ].each do |description, build|
+      it "marks the mapping invalid for a placeholder inside #{description}" do
+        mapping = IPaaS::Connector::Mapping::FieldMapping.new.tap do |m|
+          m.field_id = :api_key
+          m.fixed = build.call(node)
+        end
+
+        expect(mapping).not_to be_valid
+        expect(mapping.errors[:fixed]).to include(node.message)
+      end
+    end
+
+    it 'raises an IPaaS::Error when the incoming YAML still carries an unloadable tag' do
+      yaml = "field_id: api_key\nfixed: !ruby/object:#{UnresolvedNodeHelper::UNPERMITTED_CLASS}\n  " \
+             "encrypted: gAAAA_blob==\n  encryptor:\n"
+
+      expect { IPaaS::Connector::Mapping::FieldMapping.parse(yaml) }
+        .to raise_error(IPaaS::Error, /could not be loaded/)
+    end
+
+    it 'keeps an unresolved field_id instead of naming the field after the error' do
+      mapping = IPaaS::Connector::Mapping::FieldMapping.parse({ field_id: node, fixed: 'x' })
+
+      expect(mapping.field_id).to be(node)
+      expect(mapping).not_to be_valid
+      expect(mapping.errors[:field_id]).to include(node.message)
+    end
+  end
 end

@@ -146,6 +146,7 @@ class RubyConnector < IPaaS::Connector::Definition
       | Helper | Purpose |
       |---|---|
       | `http_send(method, url, **options)`, `http_connection`, plus method shortcuts (`get`, `post`, `put`, `delete`, `head`, `patch`, `options`, `trace`, and their `http_`-prefixed aliases), `multipart_post`, `create_text_part`, `create_binary_part` | Outbound HTTP |
+      | `raw_param_value(value)` | Marks a query-parameter value as already percent-encoded so it is not escaped again, for values lifted out of a signed URL. The value is rejected if it contains a bare `&` or `;`, a tab, carriage return or newline, or a `%` not followed by two hex digits. Only top-level values carry the marker: one nested inside a hash parameter is escaped as usual, and a hash or array grouped with a marked value is refused. A connection that sets its own `params_encoder` keeps it and forfeits raw pass-through. |
       | `oauth2_client_credentials_body(…)`, `oauth2_refresh_body(…)`, `oauth2_authorization_header(…)`, `clear_oauth2_header_cache` | OAuth2 request bodies and header caching |
       | `aws_credentials_for_role`, `aws_account_id`, `build_aws_signed_headers`, `call_aws` | AWS SigV4 signing |
       | `basic_auth_credentials` | Basic auth credential lookup |
@@ -330,6 +331,7 @@ class RubyConnector < IPaaS::Connector::Definition
         | Helper | Purpose |
         |---|---|
         | `http_send(method, url, **options)`, `http_connection`, plus method shortcuts (`get`, `post`, `put`, `delete`, `head`, `patch`, `options`, `trace`, and their `http_`-prefixed aliases), `multipart_post`, `create_text_part`, `create_binary_part` | Outbound HTTP |
+        | `raw_param_value(value)` | Marks a query-parameter value as already percent-encoded so it is not escaped again, for values lifted out of a signed URL. The value is rejected if it contains a bare `&` or `;`, a tab, carriage return or newline, or a `%` not followed by two hex digits. Only top-level values carry the marker: one nested inside a hash parameter is escaped as usual, and a hash or array grouped with a marked value is refused. A connection that sets its own `params_encoder` keeps it and forfeits raw pass-through. |
         | `oauth2_client_credentials_body(…)`, `oauth2_refresh_body(…)`, `oauth2_authorization_header(…)`, `clear_oauth2_header_cache` | OAuth2 request bodies and header caching |
         | `aws_credentials_for_role`, `aws_account_id`, `build_aws_signed_headers`, `call_aws` | AWS SigV4 signing |
         | `basic_auth_credentials` | Basic auth credential lookup |

@@ -7,6 +7,13 @@ module IPaaS
       class ProcHelper
         ACTION_OUTPUT_REGEX = /action_output\('([^']+)'|action_output\("([^"]+)"/
 
+        # Upper bound on how deeply procs may nest during a single resolution.
+        # A proc whose value depends on itself (e.g. a config field that reads
+        # `config`) re-enters proc execution without bound and, uncapped, exhausts
+        # the Ruby stack (SystemStackError) which 500s the page. 100 is far above
+        # the deepest legitimate nesting (schema depth is capped much lower).
+        MAX_PROC_DEPTH = 100
+
         # Field attributes any FIELD_RULES rule may consult to decide
         # validity. Today only `NoSafePresentRule` reads the field, and it
         # branches on `(required && type == :boolean)`. If a future rule
@@ -15,6 +22,9 @@ module IPaaS
         FIELD_VALIDATION_ATTRIBUTES = [:required, :type].freeze
 
         class InvalidProcCalled < IPaaS::Error
+        end
+
+        class RecursiveProcError < IPaaS::Error
         end
 
         class ProcSourceError < IPaaS::Error
@@ -116,14 +126,23 @@ module IPaaS
         cattr_accessor :validated_before do
           Set.new
         end
-        attr_accessor :context, :procedure, :source, :on_invalid, :errors
+        attr_reader :declared_context
+        attr_accessor :procedure, :source, :on_invalid
 
         def initialize(context, procedure, on_invalid: nil, field: nil)
-          @context = context
+          @declared_context = context
           @procedure = procedure
           @source = procedure.is_a?(String) ? procedure : self.class.proc_source(procedure)
           @on_invalid = on_invalid
           @field = field
+        end
+
+        def errors
+          errors_by_helper[self] ||= []
+        end
+
+        def errors=(value)
+          errors_by_helper[self] = value
         end
 
         def valid?
@@ -145,11 +164,11 @@ module IPaaS
         def execute(*params, **kwargs)
           raise InvalidProcCalled, errors.to_s unless valid?
 
-          executing do
+          executing do |ctx|
             if params.empty? && kwargs.empty?
-              run_proc
+              run_proc(ctx)
             else
-              run_proc_with_params(*params, **kwargs)
+              run_proc_with_params(ctx, *params, **kwargs)
             end
           end
         end
@@ -157,43 +176,64 @@ module IPaaS
         private
 
         def executing
-          old_context = self.context
-          self.context = executing_procs.first.context if context.nil? && executing_procs.any?
-          executing_procs.push(self)
-          yield
-        ensure
-          self.context = old_context
-          executing_procs.pop
+          guard_against_recursion!
+          ctx = effective_context
+          executing_procs.push([self, ctx])
+          begin
+            yield ctx
+          ensure
+            executing_procs.pop
+          end
+        end
+
+        def effective_context
+          declared_context || executing_procs.first&.last
+        end
+
+        def errors_by_helper
+          Thread.current[:proc_helper_errors] ||= ObjectSpace::WeakKeyMap.new
+        end
+
+        # Raised before pushing, so a self-referential/too-deep proc is stopped as an
+        # ordinary (catchable) error instead of exhausting the stack. Kept outside the
+        # push/pop begin/ensure above so it never pops a frame it did not push.
+        def guard_against_recursion!
+          return if executing_procs.size < MAX_PROC_DEPTH
+
+          raise RecursiveProcError,
+                "Expression is nested too deeply or refers back to itself (over #{MAX_PROC_DEPTH} levels of " \
+                'evaluation). Check for an expression whose value depends on itself, for example a config field ' \
+                'that reads `config`.'
         end
 
         def executing_procs
           Thread.current[:executing_procs] ||= []
         end
 
-        def run_proc
+        def run_proc(ctx)
           if procedure.is_a?(String)
             # As there are no parameters provided a string can simply be evaluated and will
             # directly result in the value, e.g. '["Hello", " ", "World!"].join()'
-            context.instance_eval(procedure, __FILE__, __LINE__)
+            ctx.instance_eval(procedure, __FILE__, __LINE__)
           else
-            context.instance_exec(&procedure)
+            ctx.instance_exec(&procedure)
           end
         end
 
-        def run_proc_with_params(*params, **)
+        def run_proc_with_params(ctx, *params, **)
           proc = if procedure.is_a?(String)
                    # As parameters provided the string should be evaluated to a
                    # procedure e.g. '->(value) { value.starts_with?("Hello") }'.
                    # The next step is then to execute the proc with the given params.
-                   context.instance_eval(procedure, __FILE__, __LINE__)
+                   ctx.instance_eval(procedure, __FILE__, __LINE__)
                  else
                    procedure
                  end
-          context.instance_exec(*params, **, &proc)
+          ctx.instance_exec(*params, **, &proc)
         end
 
         def validate_nodes(ast)
-          node_validator = ProcRules::NodeValidator.new(context: context,
+          node_validator = ProcRules::NodeValidator.new(context: effective_context,
                                                         on_invalid: ->(message) { validation_error(message) },
                                                         field: @field)
           ast&.each_node { |node| node_validator.validate(node) }
@@ -206,8 +246,35 @@ module IPaaS
 
         def parse_ast
           rubocop_source = RuboCop::AST::ProcessedSource.new(source, 3.4)
-          validation_error(rubocop_source.diagnostics.map(&:render).join("\n")) if rubocop_source.ast.nil?
+          if rubocop_source.ast.nil?
+            # A bare data pill (`#{...}`) turns the rest of its line into a Ruby comment. Two
+            # shapes exist: single-line `mapping[#{pill}]` eats the closing `]`, so the ast is nil
+            # *with* a syntax diagnostic — this branch. (The multi-line `mapping[\n#{pill}\n]` shape
+            # keeps its `]` on its own line, so the ast is non-nil (`mapping[]`) and is caught by
+            # the non-nil branch below.) Run the pill check first and prefer its actionable message;
+            # fall back to the raw parser diagnostic only for a genuine syntax error (no bare pill).
+            validate_no_bare_interpolation(rubocop_source)
+            diag = rubocop_source.diagnostics.map(&:render).join("\n")
+            validation_error(diag) if errors.blank? && !diag.empty?
+            return nil
+          end
+          validate_no_bare_interpolation(rubocop_source)
           rubocop_source.ast
+        end
+
+        # A data pill written outside a string (e.g. `mapping[#{pill}]`) lexes as a Ruby comment,
+        # so the value is silently dropped and the proc fails or misbehaves at runtime. The Ruby
+        # lexer never treats a real string's `#{...}` as a comment, so scanning comments avoids
+        # false positives on legitimate procs. A hand-written comment starting with `#{` (no space
+        # after #) is technically a false positive but that style is never used in practice.
+        def validate_no_bare_interpolation(rubocop_source)
+          return unless rubocop_source.comments.any? { |comment| comment.text.start_with?('#{') }
+
+          validation_error(
+            'A data pill was used outside a string, where Ruby treats it as a comment and ignores it. ' \
+            "Remove the surrounding \#{} so the pill is used directly in code, " \
+            'or place the pill inside a double-quoted string.'
+          )
         end
 
         def validation_cache_key

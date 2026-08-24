@@ -150,8 +150,20 @@ describe IPaaS::Connector::Action do
       expect(action).to be_valid
     end
 
+    it 'should skip validating an outbound connection whose field logic did not resolve' do
+      connection = double
+      expect(connection).to receive(:unresolved?).and_return(true)
+      expect(connection).not_to receive(:valid?)
+      action.outbound_connection = connection
+
+      action.valid?
+
+      expect(action.errors[:outbound_connection]).not_to include(/\Ainvalid: /)
+    end
+
     it 'should validate outbound connection is valid' do
       connection = double
+      expect(connection).to receive(:unresolved?).and_return(false)
       expect(connection).to receive(:valid?).and_return(false)
       expect(connection).to receive(:full_error_messages).and_return(['Broken', 'And just wrong'])
       action.outbound_connection = connection
@@ -188,6 +200,57 @@ describe IPaaS::Connector::Action do
       )
       expect(invalid_action).not_to be_valid
       expect(invalid_action.errors[:input_mapping]).to include("invalid: Field 'numbers' is required.")
+    end
+
+    context 'when a raised resolve has left the input memo defined-and-nil' do
+      let(:unvalidatable_action) do
+        IPaaS::Connector::Action.parse(
+          runbook,
+          {
+            reference: 'action_uuid',
+            description: 'Test description',
+            outbound_connection: { uuid: outbound_connection.uuid },
+            action_template: { uuid: 'unique-action-id' },
+            input_mapping: [{ field_id: 'operator', fixed: 'sum' }],
+          }.to_yaml
+        ).tap { |action| action.instance_variable_set(:@input, nil) }
+      end
+
+      it 'reports the mapping as unvalidatable rather than passing it silently' do
+        expect(unvalidatable_action).not_to be_valid
+        expect(unvalidatable_action.errors[:input_mapping])
+          .to include('could not be validated because the field logic did not resolve.')
+      end
+
+      it 'keeps that error on the runbook, which is what promotable? consults' do
+        runbook.actions = [unvalidatable_action]
+
+        expect(runbook).not_to be_valid
+        expect(runbook.full_error_messages).to include('could not be validated')
+      end
+
+      it 'stays silent when the runbook is knowingly unresolved, since the degrade reports itself' do
+        runbook.unresolved_error = 'Field logic did not resolve within 5s.'
+        unvalidatable_action.valid?
+
+        expect(unvalidatable_action.errors[:input_mapping]).to be_empty
+      end
+
+      it 'names what raised when the resolve failed inside the request, not at load' do
+        unvalidatable_action.resolve_error = 'undefined method `upcase` for nil'
+
+        expect(unvalidatable_action).not_to be_valid
+        expect(unvalidatable_action.errors[:input_mapping])
+          .to include('could not be validated, the field logic raised: undefined method `upcase` for nil')
+      end
+
+      it 'still defers to the load-time degrade when both are set, since that one reports itself' do
+        runbook.unresolved_error = 'Field logic did not resolve within 5s.'
+        unvalidatable_action.resolve_error = 'undefined method `upcase` for nil'
+        unvalidatable_action.valid?
+
+        expect(unvalidatable_action.errors[:input_mapping]).to be_empty
+      end
     end
 
     it 'should validate the procs of the input mapping' do

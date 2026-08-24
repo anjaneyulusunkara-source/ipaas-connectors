@@ -112,6 +112,10 @@ module IPaaS
         { 'salt' => salt, 'hash' => hash_value }
       end
 
+      def encode_with(coder)
+        coder.represent_object(nil, to_h)
+      end
+
       def as_json(*)
         to_h
       end

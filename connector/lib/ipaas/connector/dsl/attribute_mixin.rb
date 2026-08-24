@@ -76,12 +76,18 @@ module IPaaS
             value = self.send(name)
             return if value.nil?
 
+            return report_unresolved_values(name, value) if IPaaS::Connector::Common::UnresolvedNode.within?(value)
+
             resolved_type = resolve_type(type)
             if resolved_type.is_a?(Array)
               validate_array_type(name, value, resolved_type.first)
             else
               validate_single_type(name, value, resolved_type)
             end
+          end
+
+          def report_unresolved_values(name, value)
+            IPaaS::Connector::Common::UnresolvedNode.all_within(value).each { |node| errors.add(name, node.message) }
           end
 
           def resolve_type(type)

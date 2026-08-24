@@ -5,6 +5,15 @@ module IPaaS
 
       delegate :as_json, to: :encrypted, allow_nil: true
 
+      def encode_with(coder)
+        coder.represent_object(nil, encrypted)
+      end
+
+      def init_with(coder)
+        self.encrypted = coder.type == :scalar ? coder.scalar : coder.map['encrypted']
+        self.encryptor = nil
+      end
+
       def initialize(encrypted, encryptor = nil)
         self.encrypted = encrypted
         self.encryptor = encryptor

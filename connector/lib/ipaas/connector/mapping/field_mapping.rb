@@ -129,13 +129,12 @@ module IPaaS
             return field_mapping if field_mapping.is_a?(FieldMapping)
 
             raise IPaaS::Error, 'Field mapping must be a hash.' unless array_or_hash.is_a?(Hash)
-            hash = array_or_hash.deep_symbolize_keys
 
-            FieldMapping.new.tap do |new_field_mapping|
-              copy_field_mapping_values(new_field_mapping, hash)
-            end
+            FieldMapping.new.tap { |mapping| copy_field_mapping_values(mapping, array_or_hash.deep_symbolize_keys) }
           rescue Psych::SyntaxError
             raise IPaaS::Error, "Field mapping must be a YAML hash. Found: #{field_mapping.inspect}."
+          rescue Psych::DisallowedClass => e
+            raise IPaaS::Error, "Field mapping holds a value that could not be loaded: #{e.message}"
           end
 
           def fixed_mapping(values)
@@ -150,7 +149,7 @@ module IPaaS
           private
 
           def copy_field_mapping_values(field_mapping, hash)
-            field_mapping.field_id = hash[:field_id]&.to_s&.presence&.to_sym
+            field_mapping.field_id = IPaaS::Connector::Common::UnresolvedNode.symbolize(hash[:field_id])
             field_mapping.nested = parse(hash[:nested]) if hash[:nested].present?
             [:fixed, :proc, :variable, :runbook_variable].each do |key|
               field_mapping.send(:"#{key}=", hash[key])

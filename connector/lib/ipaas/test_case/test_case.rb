@@ -21,14 +21,14 @@ module IPaaS
       validate :actions_valid?
 
       class << self
-        def parse(test_case)
-          hash = IPaaS::Connector::Common::Serializer.parse(test_case, with_uuid: true)
+        def parse(test_case, resolve: true, tolerant: false)
+          hash = IPaaS::Connector::Common::Serializer.parse(test_case, with_uuid: true, tolerant: tolerant)
           raise IPaaS::Error, 'TestCase must be a hash.' unless hash.is_a?(Hash)
           hash = hash.deep_symbolize_keys
 
           TestCase.new(hash[:uuid]).tap do |obj|
             copy_test_case_values(obj, hash)
-            obj.valid?
+            obj.valid? if resolve
           end
         end
 

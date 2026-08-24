@@ -12,7 +12,7 @@ module IPaaS
         proc_safe :http_connection, :http_send,
                   :get, :post, :put, :delete, :head, :patch, :options, :trace,
                   :http_get, :http_post, :http_put, :http_delete, :http_head, :http_patch, :http_options, :http_trace,
-                  :multipart_post, :create_text_part, :create_binary_part
+                  :multipart_post, :create_text_part, :create_binary_part, :raw_param_value
 
         included do
           def http_connection(uri, skip_authentication: false, open_timeout: nil, timeout: nil)
@@ -82,6 +82,10 @@ module IPaaS
             end
           end
 
+          def raw_param_value(value)
+            IPaaS::Job::Outbound::HTTP.raw_param_value(value)
+          end
+
           private
 
           def request_options(open_timeout: nil, timeout: nil)
@@ -89,6 +93,7 @@ module IPaaS
               open_timeout: open_timeout || OPEN_TIMEOUT,
               timeout: timeout || TIMEOUT,
               proxy: proxy_config,
+              params_encoder: IPaaS::Job::Outbound::SelectiveParamsEncoder,
             }
           end
 
@@ -111,6 +116,10 @@ module IPaaS
         end
 
         class << self
+          def raw_param_value(value)
+            IPaaS::Job::Outbound::RawParamValue.new(value)
+          end
+
           def validate_method!(method)
             return if VALID_METHODS.include?(method.to_sym)
 
@@ -141,9 +150,10 @@ module IPaaS
 
           def validate_params!(params)
             return if params.nil?
-            return if hash_with_symbols_or_keys?(params)
+            return if param_hash?(params)
 
-            raise IPaaS::Error, "Params must be a hash with symbols or strings, found #{params.inspect}."
+            raise IPaaS::Error,
+                  "Params must be a hash with symbols, strings or raw-marked values, found #{params.inspect}."
           end
 
           def validate_body!(body)
@@ -193,6 +203,17 @@ module IPaaS
 
           def symbol_or_key?(value)
             value.is_a?(String) || value.is_a?(Symbol)
+          end
+
+          def param_hash?(hash)
+            return false unless hash.is_a?(Hash)
+            return false unless all_symbols_or_keys?(hash.keys)
+
+            hash.values.all? { |value| Array.wrap(value).all? { |element| param_value?(element) } }
+          end
+
+          def param_value?(value)
+            value.nil? || symbol_or_key?(value) || value.is_a?(IPaaS::Job::Outbound::RawParamValue)
           end
         end
       end

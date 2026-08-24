@@ -15,21 +15,21 @@ module IPaaS
       validate :type_valid?
 
       class << self
-        def parse(yaml)
-          hash = IPaaS::Connector::Common::Serializer.parse(yaml, with_uuid: true)
+        def parse(yaml, resolve: true, tolerant: false)
+          hash = IPaaS::Connector::Common::Serializer.parse(yaml, with_uuid: true, tolerant: tolerant)
           raise IPaaS::Error, 'EnvironmentVariable must be a hash.' unless hash.is_a?(Hash)
           hash = hash.deep_symbolize_keys
 
           EnvironmentVariable.new(hash[:uuid]).tap do |var|
             copy_connection_values(var, hash)
-            var.valid?
+            var.valid? if resolve
           end
         end
 
         def copy_connection_values(var, hash)
           var.name = hash[:name]
           var.description = hash[:description]
-          var.type = hash[:type]&.to_sym
+          var.type = hash[:type]
         end
       end
 
@@ -46,7 +46,7 @@ module IPaaS
       end
 
       def type_with_to_sym=(value)
-        self.type_without_to_sym = value.try(:to_sym)
+        self.type_without_to_sym = IPaaS::Connector::Common::UnresolvedNode.symbolize(value)
       end
 
       alias type_without_to_sym= type=

@@ -16,6 +16,7 @@ RSpec.configure do |config|
 
   config.before(:each) do
     IPaaS::Connector::Common::UuidMixin.purge
+    IPaaS::Connector::Common::Serializer.reset_tolerant_substitution!
     IPaaS::Encryption::SystemKeyProvider.memcache.clear
     IPaaS::Encryption::IntermediateKeyProvider.memcache.clear
   end

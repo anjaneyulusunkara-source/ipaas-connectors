@@ -774,4 +774,140 @@ describe IPaaS::Connector::Schema::Field do
       end
     end
   end
+
+  describe 'unresolved values' do
+    let(:node) { unresolved_node }
+    let(:field) { IPaaS::Connector::Schema::Field.new(id: :api_key, label: 'API Key', type: :secret_string) }
+
+    it 'preserves an UnresolvedNode default instead of coercing it through the type' do
+      field.default = node
+      expect(field.default).to be(node)
+    end
+
+    [
+      [:default, :secret_string, ->(n) { n }],
+      [:sample, :secret_string, ->(n) { n }],
+      [:hint, :ruby, ->(n) { n }],
+      [:notice, :ruby, ->(n) { n }],
+      [:min_date, :ruby, ->(n) { n }],
+      [:enumeration, :string, ->(n) { [n] }],
+    ].each do |attr, type, build|
+      it "marks the field invalid when #{attr} is unresolved" do
+        field = IPaaS::Connector::Schema::Field.new(id: :api_key, label: 'API Key', type: type)
+        field.send(:"#{attr}=", build.call(node))
+
+        expect(field).not_to be_valid
+        expect(field.errors.full_messages.grep(/#{Regexp.escape(node.message)}/)).not_to be_empty
+      end
+    end
+
+    it 're-emits the original node losslessly via to_h_ref' do
+      field.default = node
+
+      dumped = IPaaS::Connector::Common::Serializer.dump(field.to_h_ref)
+      expect(dumped).to include("!ruby/object:#{UnresolvedNodeHelper::UNPERMITTED_CLASS}", 'encrypted: gAAAA_blob==')
+      expect(IPaaS::Connector::Common::Serializer.parse(dumped, tolerant: true)[:default].unresolved_class)
+        .to eq(UnresolvedNodeHelper::UNPERMITTED_CLASS)
+    end
+
+    it 'reports an unresolved value nested in a sub-field on the parent' do
+      parent = IPaaS::Connector::Schema::Field.new(id: :creds, label: 'Creds', type: :nested)
+      parent.fields = [field.tap { |f| f.default = node }]
+
+      expect(parent).not_to be_valid
+      expect(parent.errors[:base]).to include("Field (api_key) invalid: Default #{node.message}")
+    end
+
+    it 'accepts a bare placeholder for enumeration and reports it instead of raising' do
+      enum_field = IPaaS::Connector::Schema::Field.new(id: :pick, label: 'Pick', type: :string)
+
+      expect { enum_field.enumeration = node }.not_to raise_error
+      expect(enum_field).not_to be_valid
+      expect(enum_field.errors[:enumeration]).to include(node.message)
+    end
+
+    it 'keeps a sub-field that is itself a placeholder instead of dropping it' do
+      parent = IPaaS::Connector::Types::SchemaFieldType.resolve(
+        { id: 'creds', label: 'Creds', type: 'nested', fields: [node] }
+      )
+
+      expect(parent.fields_without_nested_schema).to eq([node])
+      expect(parent).not_to be_valid
+      expect(parent.errors[:fields]).to include(node.message)
+    end
+
+    it 'reports unloadable values through a sub-field that is itself a placeholder' do
+      parent = IPaaS::Connector::Types::SchemaFieldType.resolve(
+        { id: 'creds', label: 'Creds', type: 'nested', fields: [node] }
+      )
+
+      expect(parent).to be_unloadable_values
+    end
+
+    it 'reports no unloadable values on a field that merely fails another validation' do
+      nameless = IPaaS::Connector::Types::SchemaFieldType.resolve({ id: 'nameless', type: 'string' })
+
+      expect(nameless).not_to be_valid
+      expect(nameless).not_to be_unloadable_values
+    end
+
+    it 'leaves an enumeration that is itself a placeholder alone rather than converting it' do
+      node = unresolved_node
+      field = IPaaS::Connector::Schema::Field.new(id: :pick, label: 'Pick', type: :string)
+
+      field.enumeration = node
+
+      expect(field.enumeration).to be(node)
+    end
+
+    it 'leaves an enumeration holding a placeholder unconverted rather than labelling the error' do
+      node = unresolved_node
+      field = IPaaS::Connector::Schema::Field.new(id: :pick, label: 'Pick', type: :string)
+
+      field.enumeration = ['a', node]
+
+      expect(field.enumeration).to eq(['a', node])
+    end
+
+    it 'converts a plain enumeration to id/label pairs as before' do
+      field = IPaaS::Connector::Schema::Field.new(id: :pick, label: 'Pick', type: :string)
+
+      field.enumeration = %w[a b]
+
+      expect(field.enumeration).to eq([{ id: 'a', label: 'a' }, { id: 'b', label: 'b' }])
+    end
+
+    it 'keeps the fast path off the placeholder scan for an already-converted enumeration' do
+      converted = IPaaS::Connector::Schema::Field.new(id: :pick, label: 'Pick', type: :string,
+                                                      enumeration: [{ id: 'a', label: 'A' }])
+
+      expect(IPaaS::Connector::Common::UnresolvedNode).not_to receive(:within?)
+
+      converted.enumeration = [{ id: 'b', label: 'B' }]
+    end
+
+    it 'keeps the fast path off the placeholder list when validating a value that holds none' do
+      big = IPaaS::Connector::Schema::Field.new(id: :blob, label: 'Blob', type: :hash)
+      big.default = { 'k' => (1..50).map { |i| { 'i' => i } } }
+
+      expect(IPaaS::Connector::Common::UnresolvedNode).not_to receive(:all_within)
+
+      expect(big).to be_valid
+    end
+
+    [
+      ['an Array', ->(n) { [n] }],
+      ['a Hash', ->(n) { { 'k' => n } }],
+      ['a nested container', ->(n) { { 'k' => [{ 'deep' => n }] } }],
+    ].each do |description, build|
+      it "does not resolve or drop an UnresolvedNode inside #{description}" do
+        container_field = IPaaS::Connector::Schema::Field.new(id: :blob, label: 'Blob', type: :string)
+        container_field.default = build.call(node)
+
+        expect(container_field.default).to eq(build.call(node))
+        expect(container_field).not_to be_valid
+        expect(container_field.errors[:default]).to include(node.message)
+      end
+    end
+  end
 end

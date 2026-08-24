@@ -71,6 +71,13 @@ describe IPaaS::Connector::Schema do
       end
       expect(schema.example).to eq({ foo: { bar: 42 } })
     end
+
+    it 'should skip non-field entries instead of raising' do
+      schema.field :foo, 'Foo', :string, required: true
+      schema.fields << 'stray_string'
+      expect(schema.example).to eq({ foo: 'Hello World!' })
+      expect(schema.example.size).to eq(1)
+    end
   end
 
   describe 'resolve' do
@@ -224,6 +231,67 @@ describe IPaaS::Connector::Schema do
       expect do
         schema.includes(IPaaS)
       end.to raise_error('Schema extension IPaaS must include IPaaS::Connector::Schema::Extension.')
+    end
+  end
+
+  describe 'declares_secret_string?' do
+    def field(id, type, fields: nil, array: false)
+      IPaaS::Connector::Schema::Field.new(id: id, label: id.to_s, type: type, fields: fields, array: array)
+    end
+
+    def schema_with(fields)
+      IPaaS::Connector::Schema.new('output').tap { |schema| schema.fields = fields }
+    end
+
+    it 'is true for a secret_string at the top level' do
+      expect(schema_with([field(:token, :secret_string)]).declares_secret_string?).to be(true)
+    end
+
+    it 'is true for a secret_string below a nested field' do
+      inner = [field(:token, :secret_string)]
+
+      expect(schema_with([field(:creds, :nested, fields: inner)]).declares_secret_string?).to be(true)
+    end
+
+    it 'is true for a secret_string two nested levels down' do
+      inner = [field(:token, :secret_string)]
+      middle = [field(:creds, :nested, fields: inner)]
+
+      expect(schema_with([field(:org, :nested, fields: middle)]).declares_secret_string?).to be(true)
+    end
+
+    it 'ignores a nil entry among the fields' do
+      expect(schema_with([nil, field(:token, :secret_string)]).declares_secret_string?).to be(true)
+    end
+
+    it 'is false when no field anywhere declares a secret_string' do
+      inner = [field(:name, :string)]
+
+      expect(schema_with([field(:org, :nested, fields: inner)]).declares_secret_string?).to be(false)
+    end
+
+    it 'is false for a schema with no fields' do
+      expect(schema_with(nil).declares_secret_string?).to be(false)
+    end
+
+    it 'is false for a self-referential schema_field rather than recursing forever' do
+      expect(schema_with([field(:payload, :schema_field)]).declares_secret_string?).to be(false)
+    end
+
+    it 'is false for a schema_field below a nested field' do
+      inner = [field(:payload, :schema_field)]
+
+      expect(schema_with([field(:results, :nested, fields: inner)]).declares_secret_string?).to be(false)
+    end
+
+    it 'never descends into the sub-schema of a type other than nested' do
+      IPaaS::Connector::Types.all.each_key do |type|
+        next if [:nested, :secret_string].include?(type)
+
+        schema = schema_with([field(:wrapper, type)])
+
+        expect(schema.declares_secret_string?).to be(false), "#{type} descended into its sub-schema"
+      end
     end
   end
 end

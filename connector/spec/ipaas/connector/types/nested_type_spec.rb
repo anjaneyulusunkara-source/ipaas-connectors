@@ -23,5 +23,12 @@ describe IPaaS::Connector::Types::NestedType do
       field.fields = [nil, sub_field]
       expect(subject.example(field)).to eq({ name: 'Hello World!' })
     end
+
+    it 'should skip non-field entries in fields instead of raising' do
+      field = IPaaS::Connector::Schema::Field.new(id: :foo, label: 'Foo', type: :nested)
+      sub_field = IPaaS::Connector::Schema::Field.new(id: :name, label: 'Name', type: :string)
+      field.fields = ['noteText', sub_field]
+      expect(subject.example(field)).to eq({ name: 'Hello World!' })
+    end
   end
 end

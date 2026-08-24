@@ -41,7 +41,7 @@ module IPaaS
       validate :blueprint_valid?
 
       class << self
-        def parse(runbook, trigger)
+        def parse(runbook, trigger, resolve: true)
           raise IPaaS::Error, 'Trigger must have a runbook with uuid.' unless runbook.try(:uuid)
           hash = IPaaS::Connector::Common::Serializer.parse(trigger)
           raise IPaaS::Error, 'Trigger must be a hash.' unless hash.is_a?(Hash)
@@ -50,7 +50,7 @@ module IPaaS
           Trigger.new.tap do |new_trigger|
             copy_trigger_values(new_trigger, hash)
             new_trigger.runbook = runbook
-            new_trigger.valid? # triggers resolve
+            new_trigger.valid? if resolve # triggers resolve
           end
         end
 
@@ -76,22 +76,28 @@ module IPaaS
       def config(resolve: false)
         return @config if defined?(@config) && !resolve
 
-        config_schema.resolve(self, config_mapping) do |values|
+        @config = nil # Prevents infinite recursion when a config proc references config; see https://xurrent-support.xurrent.com/requests/80551553
+        result = config_schema.resolve(self, config_mapping) do |values|
           @config = values
         end
+        @config ||= result
       end
 
       # Parse the incoming Rack::Request in a couple of steps:
-      # 1. Execute the validators of the inbound connection
-      # 2. Rewind the request body so the parse function sees it from the start,
+      # 1. Rewind the body so the validators see it from the start — for
+      #    x-www-form-urlencoded requests Rack parses (and consumes) the body
+      #    when route/query params are read, before the validators run.
+      # 2. Execute the validators of the inbound connection (e.g. HMAC verification)
+      # 3. Rewind the request body again so the parse function sees it from the start,
       #    even when the validate block read it (e.g. for HMAC verification)
-      # 3. Call the trigger_template.parse method to retrieve the output
-      # 4. Resolve the output using the trigger_template.output_schema
-      # 5. Raise an error in case the output is not conform the output schema
-      # 6. Return the output
+      # 4. Call the trigger_template.parse method to retrieve the output
+      # 5. Resolve the output using the trigger_template.output_schema
+      # 6. Raise an error in case the output is not conform the output schema
+      # 7. Return the output
       def parse_request(request)
+        request.body&.rewind
         inbound_connection.validate_request(request)
-        request.body.rewind
+        request.body&.rewind
         raw_output = trigger_template.call_function(:parse, self, request)
         raw_output = hash_with_encrypted_secrets(raw_output, output_schema)
         fixed_mapping = IPaaS::Connector::Mapping::FieldMapping.fixed_mapping(raw_output)
@@ -170,9 +176,8 @@ module IPaaS
       def config_mapping_valid?
         return unless trigger_template
         return if IPaaS::Connector::Mapping.invalid_mapping?(self, :config_mapping)
-        return if config.valid?
 
-        errors.add(:config_mapping, "invalid: #{config.full_error_messages}")
+        report_mapping_validity(:config_mapping, config, runbook)
       end
 
       def outbound_connection_valid?

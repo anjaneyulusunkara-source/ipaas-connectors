@@ -140,6 +140,23 @@ describe IPaaS::Job::Outbound::HTTP do
       expect(stub).to have_been_requested.times(1)
     end
 
+    it 'should send a raw-marked query parameter without escaping it again' do
+      stub = stub_request(:get, "#{EXAMPLE_SERVER}?d=a%3Bb").to_return(body: 'ok')
+      connection.http_send(:get, EXAMPLE_SERVER) do |request|
+        request.params['d'] = IPaaS::Job::Outbound::HTTP.raw_param_value('a%3Bb')
+      end
+      expect(stub).to have_been_requested.times(1)
+    end
+
+    it 'should escape an unmarked query parameter that is already encoded' do
+      # Contrast case: without the marker the pre-existing double-escaping still applies.
+      stub = stub_request(:get, "#{EXAMPLE_SERVER}?d=a%253Bb").to_return(body: 'ok')
+      connection.http_send(:get, EXAMPLE_SERVER) do |request|
+        request.params['d'] = 'a%3Bb'
+      end
+      expect(stub).to have_been_requested.times(1)
+    end
+
     it 'should be possible to pass query parameters and additional headers' do
       stub = stub_request(:patch, "#{EXAMPLE_SERVER}?foo=bar")
              .with(headers: { 'secret_key' => 'dangerously shared key', 'h2' => 'baz' })
@@ -195,6 +212,168 @@ describe IPaaS::Job::Outbound::HTTP do
     end
   end
 
+  describe 'raw query parameters' do
+    let(:raw) { IPaaS::Job::Outbound::HTTP.raw_param_value('a%3Bb') }
+
+    it 'should expose raw_param_value as an instance helper, the form the SDK documents' do
+      # It is listed in proc_safe, so a runbook proc calls it bare; without the forwarder that call
+      # passes AST validation and then raises NoMethodError at run time.
+      expect(connection.raw_param_value('a%3Bb')).to be_a(IPaaS::Job::Outbound::RawParamValue)
+    end
+
+    it 'should accept a raw value passed through the params argument' do
+      # The marker is not a String, so validate_params! has to allow it explicitly.
+      stub = stub_request(:get, "#{EXAMPLE_SERVER}?d=a%3Bb").to_return(body: 'ok')
+      connection.http_get(EXAMPLE_SERVER, { 'd' => raw })
+      expect(stub).to have_been_requested.times(1)
+    end
+
+    it 'should accept a repeated raw value through the params argument, which the encoder emits bare' do
+      # The encoder has an Array branch for this; the validator used to reject it before it ran.
+      stub = stub_request(:get, "#{EXAMPLE_SERVER}?q=A&q=B").to_return(body: 'ok')
+      repeated = %w[A B].map { |value| IPaaS::Job::Outbound::HTTP.raw_param_value(value) }
+      connection.http_get(EXAMPLE_SERVER, { 'q' => repeated })
+      expect(stub).to have_been_requested.times(1)
+    end
+
+    it 'should accept a name-only params entry, which the encoder emits without an equals sign' do
+      stub = stub_request(:get, "#{EXAMPLE_SERVER}?flag&d=a%3Bb").to_return(body: 'ok')
+      connection.http_get(EXAMPLE_SERVER, { 'flag' => nil, 'd' => raw })
+      expect(stub).to have_been_requested.times(1)
+    end
+
+    it 'should still reject a params value that is neither a string nor raw-marked' do
+      expect do
+        connection.http_get(EXAMPLE_SERVER, { 'd' => 42 })
+      end.to raise_error(IPaaS::Error, /Params must be a hash with symbols, strings or raw-marked values/)
+    end
+
+    it 'should still reject a raw-marked header value' do
+      expect do
+        connection.http_get(EXAMPLE_SERVER, nil, { 'X-Foo' => raw })
+      end.to raise_error(IPaaS::Error, /Headers must be a hash with symbols or strings/)
+    end
+
+    it 'should still reject a raw-marked multipart part' do
+      expect do
+        connection.multipart_post(EXAMPLE_SERVER, { f: raw })
+      end.to raise_error(IPaaS::Error, /Unsupported parts found/)
+    end
+
+    it 'should send a raw-marked query parameter unescaped from multipart_post' do
+      stub = stub_request(:post, "#{EXAMPLE_SERVER}?d=a%3Bb").to_return(body: 'ok')
+      parts = { f: IPaaS::Job::Outbound::HTTP.create_text_part('text/plain', 'x') }
+      connection.multipart_post(EXAMPLE_SERVER, parts) { |request| request.params['d'] = raw }
+      expect(stub).to have_been_requested.times(1)
+    end
+
+    [:post, :put, :patch].each do |method|
+      it "should send a raw-marked query parameter unescaped for http_#{method}" do
+        stub = stub_request(method, "#{EXAMPLE_SERVER}?d=a%3Bb").to_return(body: 'ok')
+        connection.send(:"http_#{method}", EXAMPLE_SERVER) { |request| request.params['d'] = raw }
+        expect(stub).to have_been_requested.times(1)
+      end
+
+      it "should escape an unmarked already-encoded query parameter for http_#{method}" do
+        stub = stub_request(method, "#{EXAMPLE_SERVER}?d=a%253Bb").to_return(body: 'ok')
+        connection.send(:"http_#{method}", EXAMPLE_SERVER) { |request| request.params['d'] = 'a%3Bb' }
+        expect(stub).to have_been_requested.times(1)
+      end
+    end
+
+    # The bare Faraday verbs are proc_safe too, and a shipped connector reaches one of them
+    # directly (checkmk_connector.rb:781). No call-site hook can cover these, which is why the
+    # encoder is installed on the connection rather than swapped in per request.
+    [:get, :head, :delete, :trace].each do |method|
+      it "should send a raw-marked query parameter unescaped for the bare #{method} verb" do
+        stub = stub_request(method, "#{EXAMPLE_SERVER}?d=a%3Bb").to_return(body: 'ok')
+        connection.http_connection(EXAMPLE_SERVER).send(method) { |request| request.params['d'] = raw }
+        expect(stub).to have_been_requested.times(1)
+      end
+
+      it "should escape an unmarked already-encoded query parameter for the bare #{method} verb" do
+        stub = stub_request(method, "#{EXAMPLE_SERVER}?d=a%253Bb").to_return(body: 'ok')
+        connection.http_connection(EXAMPLE_SERVER).send(method) { |request| request.params['d'] = 'a%3Bb' }
+        expect(stub).to have_been_requested.times(1)
+      end
+    end
+
+    it 'should send a raw-marked query parameter unescaped from a direct run_request' do
+      stub = stub_request(:get, "#{EXAMPLE_SERVER}?d=a%3Bb").to_return(body: 'ok')
+      connection.http_connection(EXAMPLE_SERVER)
+                .run_request(:get, nil, nil, nil) { |request| request.params['d'] = raw }
+      expect(stub).to have_been_requested.times(1)
+    end
+
+    it 'should not carry raw mode into a later request on the same connection' do
+      raw_stub = stub_request(:get, "#{EXAMPLE_SERVER}?d=a%3Bb").to_return(body: 'ok')
+      escaped_stub = stub_request(:get, "#{EXAMPLE_SERVER}?d=a%253Bb").to_return(body: 'ok')
+      reused = connection.http_connection(EXAMPLE_SERVER)
+      reused.http_send(:get) { |request| request.params['d'] = raw }
+      reused.http_send(:get) { |request| request.params['d'] = 'a%3Bb' }
+      expect(raw_stub).to have_been_requested.times(1)
+      expect(escaped_stub).to have_been_requested.times(1)
+    end
+
+    it 'should leave a connector-chosen encoder in charge, marker or not' do
+      # An explicit choice beats the default install, so a connector that needs FlatParamsEncoder
+      # keeps it and forfeits raw pass-through rather than silently losing its own format.
+      stub = stub_request(:get, "#{EXAMPLE_SERVER}?d=a%253Bb").to_return(body: 'ok')
+      conn = connection.http_connection(EXAMPLE_SERVER)
+      conn.options[:params_encoder] = Faraday::FlatParamsEncoder
+      conn.http_send(:get) { |request| request.params['d'] = raw }
+      expect(stub).to have_been_requested.times(1)
+    end
+
+    it 'should still let the URL layer escape a raw value that is not already legal' do
+      # The encoder emits the value verbatim, then URI::Generic#query= has its say, so
+      # "byte-for-byte" holds for existing escapes but not for a literal space or #.
+      stub = stub_request(:get, "#{EXAMPLE_SERVER}?d=sp%20ace").to_return(body: 'ok')
+      connection.http_send(:get, EXAMPLE_SERVER) do |request|
+        request.params['d'] = IPaaS::Job::Outbound::HTTP.raw_param_value('sp ace')
+      end
+      expect(stub).to have_been_requested.times(1)
+    end
+
+    it 'should fail with a connector error when a raw value carries an invalid percent escape' do
+      expect do
+        connection.http_send(:get, EXAMPLE_SERVER) do |request|
+          request.params['d'] = IPaaS::Job::Outbound::HTTP.raw_param_value('100%zz')
+        end
+      end.to raise_error(IPaaS::Error, /must not contain a '%' that is not followed by two hex digits/)
+    end
+
+    it 'should fail on a malformed escape that the URL layer would have shipped verbatim' do
+      expect do
+        connection.http_send(:get, EXAMPLE_SERVER) do |request|
+          request.params['d'] = IPaaS::Job::Outbound::HTTP.raw_param_value('discount%off')
+        end
+      end.to raise_error(IPaaS::Error, /must not contain a '%' that is not followed by two hex digits/)
+    end
+
+    it 'should still send a value whose percent escapes are all well formed' do
+      stub = stub_request(:get, "#{EXAMPLE_SERVER}?d=a%3Bb%2Ac").to_return(body: 'ok')
+      connection.http_send(:get, EXAMPLE_SERVER) do |request|
+        request.params['d'] = IPaaS::Job::Outbound::HTTP.raw_param_value('a%3Bb%2Ac')
+      end
+      expect(stub).to have_been_requested.times(1)
+    end
+
+    it 'should keep Faraday sorting and [] expansion when nothing is marked' do
+      # WebMock folds the query into a Hash before matching, so a stub URL proves the set of
+      # parameters and never their order. Assert on what the encoder emits for both claims.
+      encoder = IPaaS::Job::Outbound::SelectiveParamsEncoder
+      stub = stub_request(:get, "#{EXAMPLE_SERVER}?a=2&z=1").to_return(body: 'ok')
+      connection.http_send(:get, EXAMPLE_SERVER) do |request|
+        request.params['z'] = '1'
+        request.params['a'] = '2'
+      end
+      expect(stub).to have_been_requested.times(1)
+      expect(encoder.encode({ 'z' => '1', 'a' => '2' })).to eq('a=2&z=1')
+      expect(encoder.encode({ 'q' => %w[A B] })).to eq('q%5B%5D=A&q%5B%5D=B')
+    end
+  end
+
   describe 'short hand requests with query params' do
     [:get, :head, :delete, :trace, :options].each do |method|
       it "should be possible to use short hand http_#{method}" do
@@ -230,6 +409,22 @@ describe IPaaS::Job::Outbound::HTTP do
         expect(stub).to have_been_requested.times(1)
       end
 
+      it "should send a raw-marked query parameter unescaped for http_#{method}" do
+        stub = stub_request(method, "#{EXAMPLE_SERVER}?d=a%3Bb").to_return(body: 'ok')
+        connection.send(:"http_#{method}", EXAMPLE_SERVER) do |request|
+          request.params['d'] = IPaaS::Job::Outbound::HTTP.raw_param_value('a%3Bb')
+        end
+        expect(stub).to have_been_requested.times(1)
+      end
+
+      it "should escape an unmarked already-encoded query parameter for http_#{method}" do
+        stub = stub_request(method, "#{EXAMPLE_SERVER}?d=a%253Bb").to_return(body: 'ok')
+        connection.send(:"http_#{method}", EXAMPLE_SERVER) do |request|
+          request.params['d'] = 'a%3Bb'
+        end
+        expect(stub).to have_been_requested.times(1)
+      end
+
       it 'should validate the URI' do
         expect do
           connection.send(:"http_#{method}", 'foo/bar')
@@ -239,7 +434,8 @@ describe IPaaS::Job::Outbound::HTTP do
       it 'should validate the params' do
         expect do
           connection.send(:"http_#{method}", EXAMPLE_SERVER, 'foo')
-        end.to raise_error(IPaaS::Error, 'Params must be a hash with symbols or strings, found "foo".')
+        end.to raise_error(IPaaS::Error,
+                           'Params must be a hash with symbols, strings or raw-marked values, found "foo".')
       end
 
       it 'should validate the headers' do
@@ -266,6 +462,22 @@ describe IPaaS::Job::Outbound::HTTP do
           response = connection.send(:"http_#{method}", EXAMPLE_SERVER)
           expect(response.status).to eq(200)
           expect(JSON.parse(response.body)).to eq({ 'foo' => 'bar' })
+          expect(stub).to have_been_requested.times(1)
+        end
+
+        it "should send a raw-marked query parameter unescaped for http_#{method}" do
+          stub = stub_request(method, "#{EXAMPLE_SERVER}?d=a%3Bb").to_return(body: 'ok')
+          connection.send(:"http_#{method}", EXAMPLE_SERVER) do |request|
+            request.params['d'] = IPaaS::Job::Outbound::HTTP.raw_param_value('a%3Bb')
+          end
+          expect(stub).to have_been_requested.times(1)
+        end
+
+        it "should escape an unmarked already-encoded query parameter for http_#{method}" do
+          stub = stub_request(method, "#{EXAMPLE_SERVER}?d=a%253Bb").to_return(body: 'ok')
+          connection.send(:"http_#{method}", EXAMPLE_SERVER) do |request|
+            request.params['d'] = 'a%3Bb'
+          end
           expect(stub).to have_been_requested.times(1)
         end
 

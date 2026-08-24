@@ -15,7 +15,7 @@ module IPaaS
             value = value.to_s
             return nil if value.blank? || !context.respond_to?(:runbook)
 
-            context.runbook.runbook_variables.detect { |variable| variable.id.to_s == value }
+            context.runbook.defined_runbook_variables.detect { |variable| variable.id.to_s == value }
           end
 
           def example(_field)

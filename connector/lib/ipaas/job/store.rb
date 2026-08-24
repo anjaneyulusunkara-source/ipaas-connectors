@@ -6,6 +6,11 @@ module IPaaS
 
       proc_safe :store, :read, :write
 
+      # Not a StandardError to ensure these fundamental exceptions are not swallowed by standard error handlers.
+      # rubocop:disable Lint/InheritException
+      class UnresolvableStoreScope < Exception; end
+      # rubocop:enable Lint/InheritException
+
       included do
         def self.store_for(_, namespace: nil)
           MemoryStore.new(namespace: namespace)
@@ -22,7 +27,8 @@ module IPaaS
         end
 
         def store_namespace
-          unique_id = try(:uuid) || try(:id) || object_id
+          unique_id = try(:uuid) || try(:id)
+          raise UnresolvableStoreScope, 'Unable to determine namespace for storage' unless unique_id
           "#{self.class.name}:#{unique_id}"
         end
       end

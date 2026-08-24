@@ -89,11 +89,11 @@ module IPaaS
         end
 
         def sample=(value)
-          @sample = value.nil? || !type_def.respond_to?(:resolve) ? value : type_def.resolve(value)
+          @sample = keep_as_is?(value) ? value : type_def.resolve(value)
         end
 
         def default=(value)
-          @default = value.nil? || !type_def.respond_to?(:resolve) ? value : type_def.resolve(value)
+          @default = keep_as_is?(value) ? value : type_def.resolve(value)
         end
 
         def pattern=(value)
@@ -122,6 +122,8 @@ module IPaaS
           array ? [result] : result
         end
 
+        # Attributes are assigned by reference, so scalars are private to the copy but container
+        # attributes (enumeration, sample, default) stay shared with the original.
         def deep_dup
           super.tap do |duped|
             duped.attributes = attributes
@@ -148,7 +150,28 @@ module IPaaS
         alias eql? ==
 
         def field_definition(field_id)
-          fields&.detect { |f| f.id.to_s == field_id.to_s }
+          fields&.compact&.detect { |f| f.id.to_s == field_id.to_s }
+        end
+
+        def unloadable_values?
+          own_attributes = self.class.attribute_names - [:fields]
+          return true if own_attributes.any? { |name| IPaaS::Connector::Common::UnresolvedNode.within?(send(name)) }
+
+          Array(fields_without_nested_schema).any? do |child|
+            child.is_a?(IPaaS::Connector::Common::UnresolvedNode) ||
+              (child.is_a?(Field) && child.unloadable_values?)
+          end
+        end
+
+        def secret_string?
+          type == :secret_string
+        end
+
+        def declares_secret_string?
+          return true if secret_string?
+          return false unless type == :nested
+
+          Array(fields).any? { |field| field.is_a?(Field) && field.declares_secret_string? }
         end
 
         def to_h_ref
@@ -161,12 +184,24 @@ module IPaaS
 
         private
 
+        def keep_as_is?(value)
+          value.nil? || !type_def.respond_to?(:resolve) ||
+            IPaaS::Connector::Common::UnresolvedNode.within?(value)
+        end
+
         def parse_enumeration
-          return unless self.enumeration&.first.present?
-          return if self.enumeration.first.is_a?(Hash)
-          return unless self.type.in?(ENUMERABLE_TYPES)
+          return unless convertible_enumeration?
 
           self.enumeration = enumeration.map { |val| { id: val, label: val.to_s } }
+        end
+
+        def convertible_enumeration?
+          return false if self.enumeration.is_a?(IPaaS::Connector::Common::UnresolvedNode)
+          return false unless self.enumeration&.first.present?
+          return false if self.enumeration.first.is_a?(Hash)
+          return false unless self.type.in?(ENUMERABLE_TYPES)
+
+          !IPaaS::Connector::Common::UnresolvedNode.within?(self.enumeration)
         end
 
         def enumeration_valid?
@@ -226,18 +261,32 @@ module IPaaS
 
         def type_valid?
           return unless type.present?
+          return if IPaaS::Connector::Common::UnresolvedNode.within?(type)
           return if ANY_TYPE_PATTERN.match?(type.to_s) # any_item_type
           return if IPaaS::Connector::Types.for(type.to_sym)
 
-          all_types = IPaaS::Connector::Types.all.keys.sort.map(&:inspect).join(', ').gsub(':any', ':any_..._type')
-          errors.add(:type, "should be one of #{all_types}.")
+          errors.add(:type, "should be one of #{known_type_list}.")
+        end
+
+        def known_type_list
+          IPaaS::Connector::Types.all.keys.sort.map(&:inspect).join(', ').gsub(':any', ':any_..._type')
         end
 
         def fields_valid?
+          report_schema_shadowed_fields
           return unless fields_without_nested_schema.any?
           return if type_def.nested?
 
           errors.add(:fields, 'Subfields are only available when the type is nested.')
+        end
+
+        def report_schema_shadowed_fields
+          return unless type_def.respond_to?(:schema)
+
+          stored = fields_without_nested_schema
+          return unless IPaaS::Connector::Common::UnresolvedNode.within?(stored)
+
+          report_unresolved_values(:fields, stored)
         end
       end
     end

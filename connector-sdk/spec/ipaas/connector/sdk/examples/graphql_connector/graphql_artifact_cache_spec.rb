@@ -100,7 +100,7 @@ describe 'GraphQL Artifact Cache', :action do
     # The 'in' key for object 'users' with no include_fields under the current generation,
     # computed by the production method so the spec never drifts from the real key formula.
     def in_bundle_key
-      gen = outbound_connection.cache_read('gql_bundle_gen')
+      gen = IPaaS::Job::GraphQL::ArtifactCache.gql_bundle_generation(outbound_connection)
       IPaaS::Job::GraphQL::ArtifactCache.gql_bundle_cache_key(:query, 'in', 'users', {}, gen)
     end
 
@@ -182,7 +182,7 @@ describe 'GraphQL Artifact Cache', :action do
 
     it 'orphans the prior bundles so a refresh re-introspects and writes a fresh generation' do
       warm_the_bundle
-      gen_before = outbound_connection.cache_read('gql_bundle_gen')
+      gen_before = IPaaS::Job::GraphQL::ArtifactCache.gql_bundle_generation(outbound_connection)
 
       # A refresh-schema build clears the schema, bumps the generation, and re-introspects.
       WebMock.reset!
@@ -191,7 +191,8 @@ describe 'GraphQL Artifact Cache', :action do
       parse_query(runbook, action_input.merge(refresh_schema: true)).input_schema
 
       expect(refresh_stub).to have_been_requested # the bump orphaned the warm bundle
-      expect(outbound_connection.cache_read('gql_bundle_gen')).to eq(gen_before + 1)
+      expect(IPaaS::Job::GraphQL::ArtifactCache.gql_bundle_generation(outbound_connection))
+        .not_to eq(gen_before)
     end
   end
 
@@ -202,7 +203,7 @@ describe 'GraphQL Artifact Cache', :action do
       # Evict the root-field options but keep the bundle, generation, and schema: the
       # build must not serve an empty selector — it fails closed on the missing options
       # and rebuilds the enumeration from the still-cached schema, without introspecting.
-      gen = outbound_connection.cache_read('gql_bundle_gen')
+      gen = IPaaS::Job::GraphQL::ArtifactCache.gql_bundle_generation(outbound_connection)
       outbound_connection.cache_clear("gql_root_fields_query_#{gen}")
       WebMock.reset! # no introspection stub: the schema is still cached
 

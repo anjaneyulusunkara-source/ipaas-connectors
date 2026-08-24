@@ -81,5 +81,13 @@ describe IPaaS::Job::Store do
       expect(action3.store.store.namespace).to eq(action1.store.store.namespace)
       expect(action4.store.store.namespace).not_to eq(action1.store.store.namespace)
     end
+
+    describe 'configuration error' do
+      it 'raises when uuid is nil' do
+        action1 = IPaaS::Connector::Connection.new(nil)
+        expect { action1.store.store.namespace }
+          .to raise_error(IPaaS::Job::Store::UnresolvableStoreScope, 'Unable to determine namespace for storage')
+      end
+    end
   end
 end
