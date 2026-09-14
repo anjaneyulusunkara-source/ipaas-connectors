@@ -10,7 +10,7 @@ module IPaaS
 
         DEFAULT_TIME_ZONE = 'UTC'.freeze
 
-        ZONES = {
+        ZONES = IPaaS.make_shareable({
           'international_date_line_west' => 'International Date Line West',
           'midway_island' => 'Midway Island',
           'samoa' => 'Samoa',
@@ -164,7 +164,7 @@ module IPaaS
           'srednekolymsk' => 'Srednekolymsk',
           'chatham_is' => 'Chatham Is.',
           'tokelau_is' => 'Tokelau Is.',
-        }.freeze
+        })
 
         ZONES_BY_NAME = ZONES.to_a.to_h(&:reverse).freeze
 

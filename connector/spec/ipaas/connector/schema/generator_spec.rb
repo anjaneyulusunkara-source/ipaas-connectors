@@ -302,10 +302,10 @@ RSpec.describe IPaaS::Connector::Schema::Generator do
     end
 
     describe 'field ID truncation' do
-      let(:samples) { [{ 'a_very_long_key_name_that_exceeds_forty_characters_total' => 'val' }] }
+      let(:samples) { [{ "a_very_long_key_name_that_exceeds_the_limit_#{'x' * 40}" => 'val' }] }
 
-      it 'truncates field id to 40 characters' do
-        expect(output).to match(/field :(\w{1,40}),/)
+      it 'truncates field id to the maximum field id length' do
+        expect(output).to match(/field :(\w{1,#{IPaaS::Connector::Schema::Field::MAX_ID_LENGTH}}),/o)
       end
     end
 

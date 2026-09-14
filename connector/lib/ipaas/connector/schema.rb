@@ -15,8 +15,12 @@ module IPaaS
       function :after_update
 
       delegate :trigger, :action, :connection, :config, :input,
-               :helpers, :cache_read, :cache_write, :cache_clear,
+               :cache_read, :cache_write, :cache_clear,
                to: :context_or_connector, allow_nil: true
+
+      def helpers
+        context_or_connector&.helpers || IPaaS::Connector::Common::Helpers.empty_for_proc
+      end
 
       def initialize(reference, &block)
         self.reference = reference
@@ -78,8 +82,10 @@ module IPaaS
         mixin.apply_schema(self)
       end
 
+      # A partly unresolved schema leaves nils and UnresolvedNodes among the fields, and neither
+      # answers an id.
       def field_definition(field_id)
-        fields.detect { |f| f.id.to_s == field_id.to_s }
+        Array(fields).compact.detect { |f| f.try(:id).to_s == field_id.to_s }
       end
 
       def declares_secret_string?

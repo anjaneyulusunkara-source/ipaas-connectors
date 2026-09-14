@@ -9,4 +9,5 @@
 3. **Global Rules**: Adhere to [../AGENTS.md](../AGENTS.md).
 
 ## Sub-Directory Rules
+- [Proc Rules](./lib/ipaas/connector/common/proc_rules/AGENTS.md)
 - [Proc Rules Specs](./spec/ipaas/connector/common/proc_rules/AGENTS.md)

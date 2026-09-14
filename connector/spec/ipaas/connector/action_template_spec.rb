@@ -163,11 +163,13 @@ describe IPaaS::Connector::ActionTemplate do
 
     it "has connector's helpers as parent_helpers" do
       load_minimal_fixture
-      @connector.helper(:hello_world) { 'Hello World!' }
-      @connector.helper(:local_hello_world) { 'Hello World!' }
-      @action.helper(:local_hello_world) { 'Hallo Wereld!' }
-      expect(@action.helpers.hello_world).to eq('Hello World!')
-      expect(@action.helpers.local_hello_world).to eq('Hallo Wereld!')
+      connector = @connector
+      action = @action
+      connector.helper(:hello_world) { 'Hello World!' }
+      connector.helper(:local_hello_world) { 'Hello World!' }
+      action.helper(:local_hello_world) { 'Hallo Wereld!' }
+      expect(action.helpers.hello_world).to eq('Hello World!')
+      expect(action.helpers.local_hello_world).to eq('Hallo Wereld!')
     end
 
     it 'should execute the helper' do

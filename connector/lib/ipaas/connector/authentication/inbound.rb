@@ -28,7 +28,7 @@ module IPaaS
             # skipping auth checks at request time.
             return ['a validate block is required'] if helper.nil?
 
-            to_check = [helper, setup_info_helper, module_klass.helpers].compact
+            to_check = [helper, setup_info_helper, module_klass.helpers_definition].compact
             return [] if to_check.map(&:valid?).all?
 
             to_check.flat_map(&:errors).compact
@@ -38,14 +38,14 @@ module IPaaS
         module Extension
           extend ActiveSupport::Concern
 
-          # rubocop:disable Metrics/BlockLength
+          # rubocop:disable-next Metrics/BlockLength
           class_methods do
-            def helpers
-              @helpers ||= IPaaS::Connector::Common::Helpers.new
+            def helpers_definition
+              @helpers_definition ||= IPaaS::Connector::Common::Helpers.new
             end
 
             def helper(name, &block)
-              helpers.define_helper(name, &block)
+              helpers_definition.define_helper(name, &block)
             end
 
             def validate(&block)
@@ -72,7 +72,7 @@ module IPaaS
               validate_request_helper(binding).tap do |top_level_helper|
                 next unless top_level_helper
 
-                helpers.copy_to(binding)
+                helpers_definition.copy_to(binding)
                 top_level_helper.execute(request)
               end
             end
@@ -81,13 +81,12 @@ module IPaaS
               setup_info_helper(binding).tap do |top_level_helper|
                 next unless top_level_helper
 
-                helpers.copy_to(binding)
+                helpers_definition.copy_to(binding)
                 return top_level_helper.execute
               end
               nil
             end
           end
-          # rubocop:enable Metrics/BlockLength
         end
       end
     end

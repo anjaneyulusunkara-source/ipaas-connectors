@@ -171,6 +171,17 @@ describe IPaaS::Connector::Authentication::Outbound::OAuth2 do
         }
       end
 
+      it 'does not engage refresh token rotation for the Client Credentials grant' do
+        passed = []
+        allow(connection).to receive(:oauth2_authorization_header).and_wrap_original do |orig, *args, **opts|
+          passed << opts[:rotate_refresh_token]
+          orig.call(*args, **opts)
+        end
+        setup_oauth_server({ access_token: 'am9objpzZWNyZXQ=', token_type: 'bearer' })
+        connection.authenticate_request(request)
+        expect(passed).to eq([false])
+      end
+
       it 'should raise an error when server returns 400 error' do
         setup_oauth_server({ message: 'bad request' }, status: 400)
         expect { connection.authenticate_request(request) }
@@ -420,6 +431,40 @@ describe IPaaS::Connector::Authentication::Outbound::OAuth2 do
           refresh_token: connection.config[:oauth2][:refresh_token],
           grant_type: 'refresh_token',
         }
+      end
+
+      it 'presents the token the provider rotated to on the next exchange' do
+        rotated_body = @expected_request_body.merge(refresh_token: 'rotated-1')
+        stub_request(:post, authorization_url).with(body: @expected_request_body).to_return(
+          status: 200,
+          body: { access_token: 'AT-1', token_type: 'bearer', expires_in: 3600,
+                  refresh_token: 'rotated-1', }.to_json,
+        )
+        stub_request(:post, authorization_url).with(body: rotated_body).to_return(
+          status: 200,
+          body: { access_token: 'AT-2', token_type: 'bearer', expires_in: 3600,
+                  refresh_token: 'rotated-2', }.to_json,
+        )
+
+        Timecop.freeze do
+          connection.authenticate_request(request)
+          Timecop.travel(1.hour.from_now) do
+            later = Faraday::Request.create(:post) { |req| req.headers = {} }
+            connection.authenticate_request(later)
+            expect(later.headers['Authorization']).to eq('Bearer AT-2')
+          end
+        end
+      end
+
+      it 'engages refresh token rotation for the Refresh Token grant' do
+        passed = []
+        allow(connection).to receive(:oauth2_authorization_header).and_wrap_original do |orig, *args, **opts|
+          passed << opts[:rotate_refresh_token]
+          orig.call(*args, **opts)
+        end
+        setup_oauth_server({ access_token: 'am9objpzZWNyZXQ=', token_type: 'bearer' })
+        connection.authenticate_request(request)
+        expect(passed).to eq([true])
       end
 
       it 'includes the scope in the token request body when configured' do

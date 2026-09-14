@@ -17,7 +17,7 @@ module IPaaS
             # only raise in the test environment until existing runbooks no longer capture local variables
             raise ArgumentError, message if IPaaS.env == 'test'
 
-            Rails.logger.warn(message) if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+            IPaaS.default_logger.warn(message)
           end
         end
 
@@ -41,14 +41,14 @@ module IPaaS
 
             # Call a function if defined, and execute it within the given context with the given parameters
             return if respond_to?(:call_function)
-            define_method(:call_function) do |attribute, context, *params|
+            define_method(:call_function) do |attribute, context, *params, **kwargs|
               if !self.valid? && self.errors[attribute].present?
                 raise IPaaS::Error, "Function '#{attribute}' invalid: #{self.errors[attribute].join(', ')}"
               end
               proc = send(attribute)
               return unless proc
 
-              IPaaS::Connector::Common::ProcHelper.new(context, proc).execute(*params)
+              IPaaS::Connector::Common::ProcHelper.new(context, proc).execute(*params, **kwargs)
             end
           end
 

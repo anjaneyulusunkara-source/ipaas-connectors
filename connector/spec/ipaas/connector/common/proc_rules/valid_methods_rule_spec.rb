@@ -95,4 +95,119 @@ describe IPaaS::Connector::Common::ProcRules::ValidMethodsRule do
       end
     end
   end
+
+  describe 'reflective dispatch: a symbol argument that becomes the dispatched method name' do
+    # These cases must name no blocked constant. `Kernel` is blocked by NoGlobalAccessRule, so a
+    # `Kernel`-bearing source is rejected even with REFLECTIVE_METHODS empty and proves nothing here.
+    def errors_for(source)
+      errors = []
+      rule = described_class.new(nil, on_invalid: ->(message) { errors << message })
+      target = IPaaS::Connector::Common::ProcHelper::TARGET_RUBY_VERSION
+      RuboCop::AST::ProcessedSource.new(source, target).ast.each_node { |node| rule.process(node) }
+      errors
+    end
+
+    def not_a_literal_symbol(method_name)
+      "Method name argument to '#{method_name}' must be a literal symbol."
+    end
+
+    describe 'a literal symbol argument is validated as a method name' do
+      {
+        '[1, 2].reduce(:eval)' => "Method 'eval' not allowed.",
+        '[1, 2].reduce(:public_send)' => "Method 'public_send' not allowed.",
+        '[1, 2].reduce(:instance_variable_get)' => "Method 'instance_variable_get' not allowed.",
+        '[1, 2].reduce(:method)' => "Method 'method' not allowed.",
+        '[1].reduce(:eval, &:to_s)' => "Method 'eval' not allowed.",
+        'params[:a]&.reduce(:eval)' => "Method 'eval' not allowed.",
+      }.each do |source, message|
+        it "reports #{source.inspect} as #{message.inspect}" do
+          expect(errors_for(source)).to contain_exactly(message)
+        end
+      end
+
+      it 'reports helpers.reduce(:eval), which the top-level helper exemption would otherwise skip' do
+        expect(errors_for('helpers.reduce(:eval)')).to contain_exactly("Method 'eval' not allowed.")
+      end
+    end
+
+    describe 'an argument the validator cannot read as a method name' do
+      [
+        '[1].reduce(0, "x".to_sym) { |a, b| a }',
+        '[1].reduce("x".to_sym)',
+        '["a"].reduce(*[1, :eval]) { |a, b| a }',
+        '[1, 2].reduce(:+, 0)',
+        '[1, 2].reduce(:+, foo: 1)',
+      ].each do |source|
+        it "reports #{source.inspect} as requiring a literal symbol" do
+          expect(errors_for(source)).to contain_exactly(not_a_literal_symbol('reduce'))
+        end
+      end
+
+      it 'reports once per reflective method, so reduce and inject each report separately' do
+        source = '[[1].reduce("a".to_sym), [2].reduce("b".to_sym), [3].inject("c".to_sym)]'
+
+        expect(errors_for(source)).to contain_exactly(
+          not_a_literal_symbol('reduce'),
+          not_a_literal_symbol('inject'),
+          "Method 'inject' not allowed."
+        )
+      end
+    end
+
+    describe 'permitted reduce forms' do
+      [
+        '[1, 2].reduce(:+)',
+        '["a"].reduce(:+) { |a, b| a }',
+        '[1, 2].reduce(0) { |a, b| a + b }',
+        'params[:h].reduce({}) { |a, (k, v)| a }',
+        '[[1], [2]].reduce',
+      ].each do |source|
+        it "permits #{source.inspect}" do
+          expect(errors_for(source)).to be_empty
+        end
+      end
+    end
+
+    it 'pins REFLECTIVE_METHODS, so adding an entry forces cases for it here' do
+      covered = [:reduce, :inject]
+      covered.each do |method_name|
+        expect(errors_for(%([1].#{method_name}("x".to_sym)))).to include(not_a_literal_symbol(method_name))
+      end
+
+      expect(described_class::REFLECTIVE_METHODS.to_a).to match_array(covered)
+    end
+
+    describe 'a block-pass argument the validator cannot read' do
+      [
+        's = :instance_eval; [self, "1+1"].reduce(&s)',
+        '[self, "1+1"].reduce(&"instance_eval".to_sym)',
+        's = :instance_eval; [self].each_with_object("1+1", &s)',
+        's = :freeze; params[:a].map(&s)',
+      ].each do |source|
+        it "reports #{source.inspect} as requiring a literal symbol" do
+          expect(errors_for(source)).to include('Block argument must be a literal symbol.')
+        end
+      end
+
+      it 'reports an unreadable block-pass once per proc' do
+        source = 's = :instance_eval; [[1].reduce(&s), [2].reduce(&s)]'
+
+        expect(errors_for(source)).to contain_exactly('Block argument must be a literal symbol.')
+      end
+
+      [
+        '[1, 2].reduce(&:+)',
+        'params[:a].map(&:to_s)',
+        'params[:a].select(&:present?)',
+      ].each do |source|
+        it "permits the literal form #{source.inspect}" do
+          expect(errors_for(source)).to be_empty
+        end
+      end
+    end
+
+    it 'leaves symbols passed to non-reflective methods as data' do
+      expect(errors_for('params[:a].dig(:eval, :system)')).to be_empty
+    end
+  end
 end

@@ -4,7 +4,8 @@ describe IPaaS::Connector::Common::ProcRules::NoRescueExceptionRule do
   def errors_for(source)
     errors = []
     rule = described_class.new(nil, on_invalid: ->(message) { errors << message })
-    RuboCop::AST::ProcessedSource.new(source, 3.4).ast.each_node { |node| rule.process(node) }
+    target = IPaaS::Connector::Common::ProcHelper::TARGET_RUBY_VERSION
+    RuboCop::AST::ProcessedSource.new(source, target).ast.each_node { |node| rule.process(node) }
     errors
   end
 
@@ -30,6 +31,7 @@ describe IPaaS::Connector::Common::ProcRules::NoRescueExceptionRule do
       'begin; x.to_s; rescue SignalException; :ok; end' => 'SignalException',
       'begin; x.to_s; rescue Guard::DeadlineExceeded; :ok; end' => 'DeadlineExceeded',
       'begin; x.to_s; rescue ConfigTesterTimeout; :ok; end' => 'ConfigTesterTimeout',
+      'begin; x.to_s; rescue RunbooksController::FieldOptionsTimeout; retry; end' => 'FieldOptionsTimeout',
       'begin; x.to_s; rescue MaxActionTimeExceededError; retry; end' => 'MaxActionTimeExceededError',
       'begin; x; rescue MaxTriggerProcessingTimeExceededError; :ok; end' => 'MaxTriggerProcessingTimeExceededError',
       'begin; x.to_s; rescue RequestTimeoutException; :ok; end' => 'RequestTimeoutException',

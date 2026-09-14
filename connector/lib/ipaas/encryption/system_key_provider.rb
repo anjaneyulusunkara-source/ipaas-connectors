@@ -2,8 +2,8 @@ module IPaaS
   module Encryption
     class SystemKeyProvider
       MEMSTORE_SIZE = 1.megabyte
-      REVOKED_CHECK_INTERVAL = 60.minutes
-      EXPIRE_AFTER = 90.days
+      REVOKED_CHECK_INTERVAL = IPaaS.make_shareable(60.minutes)
+      EXPIRE_AFTER = IPaaS.make_shareable(90.days)
 
       attr_accessor :store, :kms, :system_id, :kms_key_arn
 

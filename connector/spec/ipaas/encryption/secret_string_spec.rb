@@ -26,6 +26,31 @@ describe IPaaS::Encryption::SecretString do
     end
   end
 
+  describe 'serialization with JSON.generate' do
+    it 'keeps the encrypted value of a populated secret' do
+      secret_string = described_class.encrypt(encryptor, '123')
+
+      round_tripped = JSON.parse(JSON.generate({ api_key: secret_string }))['api_key']
+
+      expect(encryptor.decrypt(round_tripped)).to eq('123')
+    end
+
+    it 'reads a secret holding no value back as nil' do
+      round_tripped = JSON.parse(JSON.generate({ api_key: described_class.new(nil, encryptor) }))['api_key']
+
+      expect(round_tripped).to be_nil
+    end
+
+    it 'keeps a mix of populated and empty secrets inside an array' do
+      secrets = [described_class.encrypt(encryptor, '123'), described_class.new(nil, encryptor)]
+
+      round_tripped = JSON.parse(JSON.generate({ identifiers: secrets }))['identifiers']
+
+      expect(encryptor.decrypt(round_tripped.first)).to eq('123')
+      expect(round_tripped.last).to be_nil
+    end
+  end
+
   describe 'usage as hash key' do
     it 'does not work if no encryptor is known' do
       encrypt = ->(value) { described_class.new(encryptor.encrypt(value)) }

@@ -37,6 +37,22 @@ describe IPaaS::Job::Outbound::HTTP do
     )
   end
 
+  describe 'VALID_METHODS' do
+    it 'contains all methods Faraday supports' do
+      Faraday::Connection::METHODS.each do |method|
+        expect(IPaaS::Job::Outbound::HTTP::VALID_METHODS).to include(method), "Faraday supports #{method}"
+      end
+      IPaaS::Job::Outbound::HTTP::VALID_METHODS.each do |method|
+        expect(Faraday::Connection::METHODS).to include(method), "Faraday does not support #{method}"
+      end
+    end
+
+    it 'did not freeze the Faraday methods set' do
+      expect(Faraday::Connection::METHODS).not_to be_frozen
+      expect(IPaaS::Job::Outbound::HTTP::VALID_METHODS).not_to equal(Faraday::Connection::METHODS)
+    end
+  end
+
   describe 'http_connection' do
     let(:connection) do
       secret = make_secret_string('secret').to_s

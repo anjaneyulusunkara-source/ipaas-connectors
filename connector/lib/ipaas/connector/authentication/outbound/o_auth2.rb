@@ -41,11 +41,13 @@ module IPaaS
             next if oauth2_config.blank?
 
             grant_type = oauth2_config[:grant_type]
+            rotates = false
             body = case grant_type
                    when 'Client Credentials'
                      oauth2_client_credentials_body(oauth2_config[:client_id],
                                                     decrypt_secret_string(oauth2_config[:client_secret]))
                    when 'Refresh Token'
+                     rotates = true
                      oauth2_refresh_body(oauth2_config[:client_id],
                                          decrypt_secret_string(oauth2_config[:client_secret]),
                                          oauth2_config[:refresh_token])
@@ -53,7 +55,9 @@ module IPaaS
                      raise IPaaS::Error, "Unknown grant_type: #{grant_type}"
                    end
             body[:scope] = oauth2_config[:scope].to_s.strip if oauth2_config[:scope].present?
-            request.headers['Authorization'] = oauth2_authorization_header(oauth2_config[:authorization_url], body)
+            request.headers['Authorization'] =
+              oauth2_authorization_header(oauth2_config[:authorization_url], body,
+                                          rotate_refresh_token: rotates)
           end
         end
 

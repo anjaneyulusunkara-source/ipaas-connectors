@@ -572,6 +572,8 @@ describe 'Xurrent Outbound Connection', :outbound_connection do
   end
 
   describe 'PROVIDER_OAUTH_SCOPES_PROSE' do
+    before { load_fixture('xurrent_app_connector') }
+
     it 'expands "ui-extension:CRU" as "Ui Extension (Create, Read, Update)"' do
       expect(XurrentAppConnector::PROVIDER_OAUTH_SCOPES_PROSE)
         .to include('   - Ui Extension (Create, Read, Update)')
@@ -580,6 +582,16 @@ describe 'Xurrent Outbound Connection', :outbound_connection do
     it 'expands "app-offering-automation-rule:CRUD" with all four action labels in order' do
       expect(XurrentAppConnector::PROVIDER_OAUTH_SCOPES_PROSE)
         .to include('   - App Offering Automation Rule (Create, Read, Update, Delete)')
+    end
+
+    it 'describes all PROVIDER_OAUTH_SCOPES' do
+      action_labels = { 'C' => 'Create', 'R' => 'Read', 'U' => 'Update', 'D' => 'Delete' }
+      generated = XurrentAppConnector::PROVIDER_OAUTH_SCOPES.map do |scope|
+        model, actions = scope.split(':')
+        model_label = model.split('-').map(&:capitalize).join(' ')
+        "   - #{model_label} (#{actions.chars.map { |c| action_labels.fetch(c) }.join(', ')})"
+      end.join("\n")
+      expect(XurrentAppConnector::PROVIDER_OAUTH_SCOPES_PROSE).to eq(generated)
     end
   end
 end

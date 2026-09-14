@@ -7,12 +7,43 @@ module IPaaS
       class ProcHelper
         ACTION_OUTPUT_REGEX = /action_output\('([^']+)'|action_output\("([^"]+)"/
 
+        # This version is used as a baseline for allowed constructs/methods.
+        # Change it only after a thorough review of its impact.
+        TARGET_RUBY_VERSION = 3.4
+
         # Upper bound on how deeply procs may nest during a single resolution.
         # A proc whose value depends on itself (e.g. a config field that reads
         # `config`) re-enters proc execution without bound and, uncapped, exhausts
         # the Ruby stack (SystemStackError) which 500s the page. 100 is far above
-        # the deepest legitimate nesting (schema depth is capped much lower).
+        # anything an authored solution nests; the nesting of the file itself is
+        # bounded separately, by YamlLimits::MAX_DEPTH.
         MAX_PROC_DEPTH = 100
+
+        # The maximum size iPaaS allows for an expression, above this value it is not validated.
+        MAX_SOURCE_BYTES = 64.kilobytes
+
+        # The maximum nesting depth iPaaS allows in an expression, above this value it is
+        # rejected. A best-effort ceiling: some expressions are refused by the guard below
+        # instead. Changing this needs explicit security approval.
+        MAX_NESTING_DEPTH = 400
+
+        TOO_LARGE_MESSAGE = "Expression is larger than #{MAX_SOURCE_BYTES / 1.kilobyte} KB. Split " \
+                            'it into separate expressions.'.freeze
+
+        TOO_COMPLEX_MESSAGE = 'This expression is too complex to validate. Simplify it, for ' \
+                              'example by splitting it into separate expressions.'.freeze
+
+        SYNTAX_ERROR_MESSAGE = 'Expression is not supported Ruby.'.freeze
+
+        # The guards below cover cases no source is known to reach. They log under this prefix so
+        # whether they are reachable is answered by scanning logs rather than by argument. Source
+        # text is never logged, only its size.
+        UNEXPECTED_PREFIX = 'ProcHelper unexpected'.freeze
+
+        BARE_DATA_PILL_MESSAGE = 'A data pill was used outside a string, where Ruby treats it as ' \
+                                 "a comment and ignores it. Remove the surrounding \#{} so the " \
+                                 'pill is used directly in code, or place the pill inside a ' \
+                                 'double-quoted string.'.freeze
 
         # Field attributes any FIELD_RULES rule may consult to decide
         # validity. Today only `NoSafePresentRule` reads the field, and it
@@ -109,6 +140,34 @@ module IPaaS
             context
           end
 
+          def read_source(source)
+            SourceParser.read(source)
+          end
+
+          # Why a source must not be evaluated, or nil when it may be. One that will not parse is
+          # refused rather than evaluated to find out why: it can never run, and evaluating it
+          # requires much more work than parsing it does before reaching the same conclusion.
+          def unevaluable_reason(source)
+            unevaluable_reason_of(read_source(source))
+          end
+
+          def unevaluable_reason_of(parsed)
+            return :unparseable if parsed.tree.nil?
+
+            :too_deeply_nested if depth_exceeded?(parsed.tree)
+          end
+
+          def depth_exceeded?(sexp)
+            stack = [[sexp, 1]]
+            until stack.empty?
+              node, depth = stack.pop
+              return true if depth > MAX_NESTING_DEPTH
+
+              node.each { |child| stack.push([child, depth + 1]) if child.is_a?(Array) }
+            end
+            false
+          end
+
           def captured_variables(proc, seen: Set.new)
             seen << proc
             proc.binding.local_variables.each_with_object({}) do |bound_local_var, acc|
@@ -122,6 +181,8 @@ module IPaaS
             end
           end
         end
+
+        private_class_method :depth_exceeded?
 
         cattr_accessor :validated_before do
           Set.new
@@ -149,10 +210,14 @@ module IPaaS
           self.errors = []
           return true if validated_before.include?(validation_cache_key)
 
+          validate_before_parsing
+          return false if errors.any?
+
           validate_nodes(parse_ast)
-          self.errors.none?.tap do |valid|
-            validated_before.add(validation_cache_key) if valid
-          end
+          self.errors.none?.tap { |valid| validated_before.add(validation_cache_key) if valid }
+        rescue SystemStackError
+          refuse_stack_exhausted
+          false
         end
 
         def execute_if_valid(...)
@@ -244,37 +309,90 @@ module IPaaS
           on_invalid&.call(message)
         end
 
-        def parse_ast
-          rubocop_source = RuboCop::AST::ProcessedSource.new(source, 3.4)
-          if rubocop_source.ast.nil?
-            # A bare data pill (`#{...}`) turns the rest of its line into a Ruby comment. Two
-            # shapes exist: single-line `mapping[#{pill}]` eats the closing `]`, so the ast is nil
-            # *with* a syntax diagnostic — this branch. (The multi-line `mapping[\n#{pill}\n]` shape
-            # keeps its `]` on its own line, so the ast is non-nil (`mapping[]`) and is caught by
-            # the non-nil branch below.) Run the pill check first and prefer its actionable message;
-            # fall back to the raw parser diagnostic only for a genuine syntax error (no bare pill).
-            validate_no_bare_interpolation(rubocop_source)
-            diag = rubocop_source.diagnostics.map(&:render).join("\n")
-            validation_error(diag) if errors.blank? && !diag.empty?
-            return nil
+        # Ordered so the most actionable message wins, and so an oversized source is refused before
+        # either of the two parses below reads it.
+        def validate_before_parsing
+          validate_source_size
+          return if errors.any?
+
+          parsed = self.class.read_source(source)
+          reason = self.class.unevaluable_reason_of(parsed)
+          # Too deep needs a restructure whatever else is wrong with it, so it is reported first: a
+          # pill fixed on the way to that restructure was never the thing standing in the way. An
+          # unparseable source is the other way around, since a bare pill is usually why it will not
+          # parse, and its own message says so where a syntax error does not.
+          if reason == :too_deeply_nested
+            validation_error(TOO_COMPLEX_MESSAGE)
+            return
           end
-          validate_no_bare_interpolation(rubocop_source)
-          rubocop_source.ast
+
+          validate_no_bare_interpolation(parsed)
+          validate_unparseable(parsed) if reason == :unparseable
+        end
+
+        def validate_source_size
+          return if source.bytesize <= MAX_SOURCE_BYTES
+
+          validation_error(TOO_LARGE_MESSAGE)
+        end
+
+        def validate_unparseable(parsed)
+          return if errors.any?
+
+          validation_error(parsed.diagnostic || SYNTAX_ERROR_MESSAGE)
+        end
+
+        # SystemStackError is not a StandardError, so it escapes validation unless named. The bounds
+        # refuse every shape known to reach this, which is not the same as making it unreachable;
+        # keep this so a shape they miss still becomes a field error.
+        def refuse_stack_exhausted
+          validation_error(TOO_COMPLEX_MESSAGE)
+          log_unexpected("stack exhausted validating #{source.bytesize} bytes")
+        end
+
+        def log_unexpected(detail)
+          IPaaS.default_logger.warn("#{UNEXPECTED_PREFIX}: #{detail} from #{source_origin}")
+        end
+
+        # Where the source came from, so a log line is actionable on its own. Never raises: one
+        # caller is the stack-overflow rescue, where losing the field error to fetch a log detail
+        # would be a poor trade.
+        def source_origin
+          return "field '#{@field.id}'" if @field.try(:id)
+          return 'an expression field' if procedure.is_a?(String)
+
+          file, line = procedure.source_location
+          file ? "#{file}:#{line}" : 'an unknown location'
+        rescue StandardError => e
+          "an origin that could not be read (#{e.class})"
+        end
+
+        def parse_ast
+          rubocop_source = RuboCop::AST::ProcessedSource.new(source, TARGET_RUBY_VERSION)
+          return rubocop_source.ast unless rubocop_source.ast.nil?
+
+          # Unparseable source is refused before this, so reaching here means the two parsers
+          # disagree. No such source is known; report the diagnostic rather than accept it
+          # silently. No diagnostic means nothing to parse, which an empty expression is allowed.
+          diagnostics = rubocop_source.diagnostics.map(&:render).join("\n")
+          if diagnostics.present?
+            log_unexpected("parsers disagree on #{source.bytesize} bytes")
+            validation_error(diagnostics)
+          end
+          nil
         end
 
         # A data pill written outside a string (e.g. `mapping[#{pill}]`) lexes as a Ruby comment,
-        # so the value is silently dropped and the proc fails or misbehaves at runtime. The Ruby
-        # lexer never treats a real string's `#{...}` as a comment, so scanning comments avoids
-        # false positives on legitimate procs. A hand-written comment starting with `#{` (no space
-        # after #) is technically a false positive but that style is never used in practice.
-        def validate_no_bare_interpolation(rubocop_source)
-          return unless rubocop_source.comments.any? { |comment| comment.text.start_with?('#{') }
+        # silently discarding the rest of the line, so it reads as one however the source parses.
+        # Reading the comments rather than the tree keeps this actionable message available for a
+        # source that will not parse at all. The lexer never treats a real string's `#{...}` as a
+        # comment, so scanning comments avoids false positives on legitimate procs. A hand-written
+        # comment starting with `#{` (no space after #) is technically a false positive but that
+        # style is never used in practice.
+        def validate_no_bare_interpolation(parsed)
+          return unless parsed.comments.any? { |text| text.start_with?('#{') }
 
-          validation_error(
-            'A data pill was used outside a string, where Ruby treats it as a comment and ignores it. ' \
-            "Remove the surrounding \#{} so the pill is used directly in code, " \
-            'or place the pill inside a double-quoted string.'
-          )
+          validation_error(BARE_DATA_PILL_MESSAGE)
         end
 
         def validation_cache_key

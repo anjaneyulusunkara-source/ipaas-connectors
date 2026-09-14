@@ -265,9 +265,19 @@ describe IPaaS::Connector::Dsl::SchemaMixin do
         schema :foo
       end.new
       foo_tester.foo do
-        field @dynamic_field || :bar, 'bar', :integer
+        field :bar, 'bar', :integer
       end
       foo_tester
+    end
+
+    def count_schema_block_executions
+      executions = 0
+      allow_any_instance_of(IPaaS::Connector::Common::ProcHelper)
+        .to receive(:execute_if_valid).and_wrap_original do |original, *args|
+        executions += 1
+        original.call(*args)
+      end
+      -> { executions }
     end
 
     it 'does not regenerate the schema by default' do
@@ -275,9 +285,9 @@ describe IPaaS::Connector::Dsl::SchemaMixin do
       expect(foo_tester.foo.fields.first.label).to eq('bar')
       expect(foo_tester.foo.fields.first.type).to eq(:integer)
 
-      # change the value of @dynamic_field but schema is not regenerated, so the field remains :bar
-      foo_tester.foo.instance_variable_set(:@dynamic_field, :updated)
-      expect(foo_tester.foo.fields.first.id).to eq(:bar)
+      executions = count_schema_block_executions
+      foo_tester.foo.fields
+      expect(executions.call).to eq(0)
     end
 
     it 'does regenerate the schema when explicitly asked' do
@@ -285,11 +295,13 @@ describe IPaaS::Connector::Dsl::SchemaMixin do
       expect(foo_tester.foo.fields.first.label).to eq('bar')
       expect(foo_tester.foo.fields.first.type).to eq(:integer)
 
-      # change the value of @dynamic_field and schema is regenerated
-      foo_tester.foo.instance_variable_set(:@dynamic_field, :updated)
-      expect(foo_tester.regenerate_schema(foo_tester.foo)).to be_nil
+      field_before = foo_tester.foo.fields.first
 
-      expect(foo_tester.foo.fields.first.id).to eq(:updated)
+      executions = count_schema_block_executions
+      expect(foo_tester.regenerate_schema(foo_tester.foo)).to be_nil
+      expect(executions.call).to eq(1)
+      expect(foo_tester.foo.fields.first).not_to be(field_before)
+      expect(foo_tester.foo.fields.map(&:id)).to eq([:bar])
     end
   end
 end

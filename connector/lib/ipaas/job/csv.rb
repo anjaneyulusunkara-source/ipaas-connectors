@@ -30,13 +30,13 @@ module IPaaS
 
       # Byte-order marks, longest first so a 4-byte UTF-32 BOM is not shadowed by
       # a matching 2-byte UTF-16 prefix (UTF-32LE FF FE 00 00 vs UTF-16LE FF FE).
-      BOMS = [
+      BOMS = IPaaS.make_shareable([
         ["\x00\x00\xFE\xFF".b, Encoding::UTF_32BE],
         ["\xFF\xFE\x00\x00".b, Encoding::UTF_32LE],
         ["\xEF\xBB\xBF".b,     Encoding::UTF_8],
         ["\xFF\xFE".b,         Encoding::UTF_16LE],
         ["\xFE\xFF".b,         Encoding::UTF_16BE],
-      ].freeze
+      ])
 
       # Raised when the input cannot be parsed as CSV, or when the parse options
       # (encoding, delimiter, quote char) are invalid.

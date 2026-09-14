@@ -291,7 +291,7 @@ describe 'Installation Changed Trigger', :trigger do
         .to_return(body: not_found_graphql_response('webhookUpdate'))
     end
 
-    # rubocop:disable Metrics/MethodLength
+    # rubocop:disable-next Metrics/MethodLength
     def create_provider_app_instance_webhook_stub(event: 'app_instance.create', app_reference: nil)
       variables = {
         event: event || 'app_instance.create',
@@ -305,7 +305,6 @@ describe 'Installation Changed Trigger', :trigger do
         .with(body: graphql_request_body(create_app_instance_webhook_query, variables: variables))
         .to_return(body: { data: create_app_instance_webhook_response }.to_json)
     end
-    # rubocop:enable Metrics/MethodLength
 
     it 'should create the provider webhook policy and app-instance webhook' do
       create_provider_webhook_policy_stub

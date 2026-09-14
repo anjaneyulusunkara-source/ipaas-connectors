@@ -27,8 +27,11 @@ describe IPaaS::Job::Delegation::HelpersRef do
     include IPaaS::Job::Context
   end
 
-  it 'should return nil when connector is not known' do
+  # An unknown connector still answers with a proxy rather than nil.
+  it 'should refuse every name when the connector is not known' do
     context = TestContext.new
-    expect(context.helpers).to be_nil
+
+    expect { context.helpers.send(:eval, '1 + 1') }
+      .to raise_error(NoMethodError, "Missing helper method 'send'.")
   end
 end

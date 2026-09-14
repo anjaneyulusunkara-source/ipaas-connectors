@@ -1,8 +1,7 @@
 class XurrentAppConnector < IPaaS::Connector::Definition
   INLINE_MEDIA_REGEX = /!\[((?:\\.|[^\]])*)\]\(([^)]+)\)(?:{:([^}]*)})?/
-  # Scopes the provider OAuth Application needs. Used by the credentials hint and the
-  # setup_info deep-link, so both stay in sync. Format: "model:RCUD" with hyphenated
-  # model names (Xurrent's URL-encoded shorthand).
+  # Scopes the provider OAuth Application needs, for the setup_info deep-link.
+  # Format: "model:RCUD" with hyphenated model names (Xurrent's URL-encoded shorthand).
   PROVIDER_OAUTH_SCOPES = %w[
     account:R
     app-instance:RU
@@ -15,13 +14,19 @@ class XurrentAppConnector < IPaaS::Connector::Definition
     webhook:CRU
     webhook-policy:CRU
   ].freeze
-  SCOPE_ACTION_LABELS = { 'C' => 'Create', 'R' => 'Read', 'U' => 'Update', 'D' => 'Delete' }.freeze
-  PROVIDER_OAUTH_SCOPES_PROSE = PROVIDER_OAUTH_SCOPES.map do |scope|
-    model, actions = scope.split(':')
-    model_label = model.split('-').map(&:capitalize).join(' ')
-    action_labels = actions.chars.map { |c| SCOPE_ACTION_LABELS.fetch(c) }
-    "   - #{model_label} (#{action_labels.join(', ')})"
-  end.join("\n").freeze
+  # PROVIDER_OAUTH_SCOPES spelled out for the credentials hint; a spec keeps the two aligned.
+  PROVIDER_OAUTH_SCOPES_PROSE = <<-PROSE.chomp.freeze
+   - Account (Read)
+   - App Instance (Read, Update)
+   - App Offering (Create, Read, Update)
+   - App Offering Automation Rule (Create, Read, Update, Delete)
+   - App Offering Scope (Create, Read, Update)
+   - Attachment (Read)
+   - Service Instance (Read)
+   - Ui Extension (Create, Read, Update)
+   - Webhook (Create, Read, Update)
+   - Webhook Policy (Create, Read, Update)
+  PROSE
   APP_OFFERING_FIELDS = <<-GRAPHQL.freeze
     id
     name
@@ -1590,7 +1595,7 @@ class XurrentAppConnector < IPaaS::Connector::Definition
       helpers.read_webhook_policy('provider_webhook_policy')
     end
 
-    # rubocop:disable Metrics/ParameterLists
+    # rubocop:disable-next Metrics/ParameterLists
     helper :write_webhook_policy do |key, id, algorithm, public_key_pem, issuer, audience|
       policy = {
         id: id,
@@ -1601,7 +1606,6 @@ class XurrentAppConnector < IPaaS::Connector::Definition
       }
       outbound_connection.store.write(key, policy.to_json)
     end
-    # rubocop:enable Metrics/ParameterLists
 
     helper :parse_json_hash do |json|
       JSON.parse(json).with_indifferent_access if json

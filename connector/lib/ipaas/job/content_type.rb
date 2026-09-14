@@ -5,7 +5,7 @@ module IPaaS
 
       proc_safe :detect_content_type
 
-      EXTENSION_MAP = {
+      EXTENSION_MAP = IPaaS.make_shareable({
         'pdf' => 'application/pdf',
         'png' => 'image/png',
         'jpg' => 'image/jpeg',
@@ -18,7 +18,7 @@ module IPaaS
         'csv' => 'text/csv',
         'txt' => 'text/plain',
         'zip' => 'application/zip',
-      }.freeze
+      })
 
       DEFAULT_CONTENT_TYPE = 'application/octet-stream'.freeze
 

@@ -5,6 +5,10 @@ module IPaaS
 
       delegate :as_json, to: :encrypted, allow_nil: true
 
+      def to_json(*)
+        encrypted.to_json(*)
+      end
+
       def encode_with(coder)
         coder.represent_object(nil, encrypted)
       end

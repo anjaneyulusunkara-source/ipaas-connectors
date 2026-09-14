@@ -18,7 +18,7 @@ module IPaaS
             :SystemExit, :SignalException, :Interrupt,
             :NoMemoryError, :SystemStackError, :SecurityError, :ScriptError,
             # deadline classes runtimes raise to interrupt an overrunning proc
-            :DeadlineExceeded, :ConfigTesterTimeout,
+            :DeadlineExceeded, :ConfigTesterTimeout, :FieldOptionsTimeout,
             :MaxActionTimeExceededError, :MaxTriggerProcessingTimeExceededError,
             :RequestTimeoutException, :RequestTimeoutError,
           ].freeze

@@ -259,6 +259,20 @@ describe IPaaS::Connector::Runbook do
                                                  'Predecessor (trigger) also connected to: action_reference.')
       end
 
+      it 'should validate action references are unique' do
+        create_action(runbook, 'action_reference')
+        expect(runbook).not_to be_valid
+        expect(runbook.errors[:base])
+          .to include(a_string_starting_with("Action reference 'action_reference' is used by more than one action"))
+      end
+
+      it 'should not report a duplicate when several actions carry distinct references' do
+        create_action(runbook, 'second-action', 'action_reference')
+        create_action(runbook, 'third-action', 'second-action')
+        runbook.valid?
+        expect(runbook.errors[:base].grep(/used by more than one action/)).to be_empty
+      end
+
       it 'should validate multiple types of invalid actions together' do
         create_action(runbook, 'duplicate-root')
         create_action(runbook, 'self-ref-action', 'self-ref-action')
@@ -287,6 +301,94 @@ describe IPaaS::Connector::Runbook do
         expect(runbook.errors[:base]).to include('Action (new-action-1) is unreachable',
                                                  'Action (new-action-2) is unreachable',
                                                  'Action (new-action-3) is unreachable')
+      end
+
+      context 'when duplicate references form a reachable cycle' do
+        before(:each) do
+          create_action(runbook, 'second-action', 'action_reference')
+          create_action(runbook, 'action_reference', 'second-action')
+        end
+
+        it 'should finish validating instead of following the cycle' do
+          expect { Timeout.timeout(10) { runbook.valid? } }.not_to raise_error
+        end
+
+        it 'should report the shared reference' do
+          Timeout.timeout(10) { runbook.valid? }
+
+          expect(runbook.errors[:base])
+            .to include(a_string_starting_with("Action reference 'action_reference' is used by more than one action"))
+        end
+
+        it 'should terminate the walk itself, not rely on the caller skipping it' do
+          expect { Timeout.timeout(10) { runbook.ordered_reachable_actions } }.not_to raise_error
+        end
+      end
+
+      context 'when two actions share a nil reference' do
+        it 'should finish validating instead of spinning the walk' do
+          runbook.actions = []
+          create_action(runbook, nil)
+          create_action(runbook, nil)
+
+          expect { Timeout.timeout(10) { runbook.valid? } }.not_to raise_error
+        end
+
+        it 'should report the shared reference so the runbook is refused, not silently accepted' do
+          runbook.actions = []
+          create_action(runbook, nil)
+          create_action(runbook, nil)
+
+          runbook.valid?
+          expect(runbook.errors[:base]).to include('More than one action has a blank reference')
+        end
+
+        it 'should name the actions that share a blank reference, which the reference cannot identify' do
+          runbook.actions = []
+          create_action(runbook, nil).description = 'All fruits logged'
+          create_action(runbook, nil).description = 'End of runbook'
+
+          runbook.valid?
+          expect(runbook.errors[:base])
+            .to include('More than one action has a blank reference: All fruits logged, End of runbook')
+        end
+      end
+    end
+
+    describe '#duplicate_action_reference' do
+      it 'is nil when every action reference is unique' do
+        create_action(runbook, 'second-action', 'action_reference')
+        create_action(runbook, 'third-action', 'second-action')
+        expect(runbook.duplicate_action_reference).to be_nil
+      end
+
+      it 'returns the reference shared by more than one action' do
+        create_action(runbook, 'action_reference')
+        expect(runbook.duplicate_action_reference).to eq('action_reference')
+      end
+    end
+
+    describe '#duplicate_action_reference?' do
+      it 'is true when two actions share a nil reference, which the value form cannot see' do
+        runbook.actions = []
+        create_action(runbook, nil)
+        create_action(runbook, nil)
+
+        expect(runbook.duplicate_action_reference).to be_nil
+        expect(runbook.duplicate_action_reference?).to be(true)
+      end
+
+      it 'is true when one action reference is nil and another is empty, which share a job-state key' do
+        runbook.actions = []
+        create_action(runbook, nil)
+        create_action(runbook, '')
+
+        expect(runbook.duplicate_action_reference?).to be(true)
+      end
+
+      it 'is false when every action reference is unique' do
+        create_action(runbook, 'second-action', 'action_reference')
+        expect(runbook.duplicate_action_reference?).to be(false)
       end
     end
   end
@@ -403,11 +505,13 @@ describe IPaaS::Connector::Runbook do
       end
     end
 
+    over_max_id = ('x' * (IPaaS::Connector::Schema::Field::MAX_ID_LENGTH + 1)).to_sym
+
     {
       'an enumeration on a hash type' => { id: :picker, label: 'Picker', type: :hash,
                                            enumeration: [{ id: 'a', label: 'A' }], },
       'no label' => { id: :nameless, type: :string },
-      'an id over 40 characters' => { id: :"#{'x' * 41}", label: 'Long', type: :string },
+      'an id over the maximum length' => { id: over_max_id, label: 'Long', type: :string },
       'an unrecognised type' => { id: :odd, label: 'Odd', type: :not_a_type },
       'a scalar default on an array' => { id: :many, label: 'Many', type: :string, array: true, default: 'one' },
       'a non-numeric default on an integer' => { id: :count, label: 'Count', type: :integer, default: 'abc' },
@@ -927,6 +1031,47 @@ describe IPaaS::Connector::Runbook do
       reachable_actions = runbook_single_level.ordered_reachable_actions
 
       expect(reachable_actions.length).to eq(2)
+    end
+
+    it 'names the actions that reachability drops' do
+      create_action(runbook_single_level, 'new-action-1', 'new-action-3')
+      create_action(runbook_single_level, 'new-action-2', 'new-action-1')
+
+      expect(runbook_single_level.unreachable_actions.map(&:reference)).to eq(%w[new-action-1 new-action-2])
+    end
+
+    it 'names the twin that a duplicate reference substitutes for' do
+      create_action(runbook_single_level, 'action-2', 'action-1')
+
+      expect(runbook_single_level.unreachable_actions.map(&:reference)).to eq(['action-2'])
+    end
+
+    it 'names nothing while every action is reachable' do
+      expect(runbook_single_level.unreachable_actions).to eq([])
+    end
+
+    it 'accepts an already computed reachable set rather than walking the graph again' do
+      create_action(runbook_single_level, 'new-action-1', 'new-action-3')
+      reachable_actions = runbook_single_level.ordered_reachable_actions
+
+      expect(runbook_single_level).not_to receive(:ordered_reachable_actions)
+      expect(runbook_single_level.unreachable_actions(reachable_actions).map(&:reference)).to eq(['new-action-1'])
+    end
+
+    it 'reports an action whose predecessor was deleted, and everything behind it, as unreachable' do
+      create_action(runbook_single_level, 'notify-requester', 'deleted-action')
+      create_action(runbook_single_level, 'close-request', 'notify-requester')
+      create_action(runbook_single_level, 'log-closure', 'close-request')
+
+      expect(runbook_single_level.unreachable_actions.map(&:reference))
+        .to eq(%w[notify-requester close-request log-closure])
+
+      runbook_single_level.valid?
+      expect(runbook_single_level.errors[:base]).to include(
+        'Action (notify-requester) is unreachable',
+        'Action (close-request) is unreachable',
+        'Action (log-closure) is unreachable',
+      )
     end
 
     it 'retains orphaned output schema actions' do

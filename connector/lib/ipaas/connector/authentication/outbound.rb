@@ -5,9 +5,9 @@ module IPaaS
         class << self
           def register(key, module_klass)
             helper = module_klass.authenticate_request_helper(nil)
-            unless helper.valid? & module_klass.helpers.valid?
+            unless helper.valid? & module_klass.helpers_definition.valid?
               errors = helper.errors
-              errors += module_klass.helpers.errors if module_klass.helpers.errors.present?
+              errors += module_klass.helpers_definition.errors if module_klass.helpers_definition.errors.present?
               raise ArgumentError, "#{module_klass} is not valid. Errors: #{errors}"
             end
             (@authentications ||= {})[key] = module_klass
@@ -26,12 +26,12 @@ module IPaaS
           extend ActiveSupport::Concern
 
           class_methods do
-            def helpers
-              @helpers ||= IPaaS::Connector::Common::Helpers.new
+            def helpers_definition
+              @helpers_definition ||= IPaaS::Connector::Common::Helpers.new
             end
 
             def helper(name, &block)
-              helpers.define_helper(name, &block)
+              helpers_definition.define_helper(name, &block)
             end
 
             def authenticate(&block)
@@ -48,7 +48,7 @@ module IPaaS
               authenticate_request_helper(binding).tap do |top_level_helper|
                 next unless top_level_helper
 
-                helpers.copy_to(binding)
+                helpers_definition.copy_to(binding)
                 top_level_helper.execute(request)
               end
             end

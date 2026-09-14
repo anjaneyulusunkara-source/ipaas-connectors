@@ -181,6 +181,12 @@ Style/MultilineBlockChain:
   Exclude:
     - 'lib/ipaas/connector/dsl/**/*.rb'
 
+# `grep` is not on the proc sandbox's method allow-list, so autocorrecting a connector's
+# `select { |record| record.is_a?(Hash) }` stops that connector loading at all.
+Style/SelectByKind:
+  Exclude:
+    - 'spec/fixtures/**/*.rb'
+
 # Specs have some characteristics that are OK
 Lint/EmptyBlock:
   Exclude:

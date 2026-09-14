@@ -125,6 +125,24 @@ describe IPaaS::Connector::Common::Serializer do
     end
   end
 
+  # A YAML alias is not part of what a solution file may contain. That is a deliberate limit, not
+  # an oversight: allowing them is a change that has to go through a full security review first.
+  # Both load paths refuse them, and these pin that so the limit cannot lapse quietly.
+  context 'YAML aliases' do
+    let(:aliased) { "a: &x\n  b: 1\nc: *x\n" }
+
+    it 'are refused on the strict path and on the tolerant one' do
+      expect { subject.class.parse(aliased) }.to raise_error(Psych::AliasesNotEnabled)
+      expect { subject.class.parse(aliased, tolerant: true) }.to raise_error(Psych::AliasesNotEnabled)
+    end
+
+    it 'are the only thing refused: the same document loads once the alias is written out' do
+      written_out = "a:\n  b: 1\nc:\n  b: 1\n"
+
+      expect(subject.class.parse(written_out)).to eq('a' => { 'b' => 1 }, 'c' => { 'b' => 1 })
+    end
+  end
+
   context 'tolerant loading' do
     after { described_class.reset_tolerant_substitution! }
 
@@ -293,6 +311,66 @@ describe IPaaS::Connector::Common::Serializer do
       dumped = subject.class.dump({ 'v' => IPaaS::Encryption::SecretString.new('cipher') })
 
       expect(dumped).to include('cipher')
+    end
+  end
+
+  context 'a file that breaks the YAML limits' do
+    let(:limits) { IPaaS::Connector::Common::YamlLimits }
+
+    def nested(levels)
+      "#{(0...levels).map { |level| "#{'  ' * level}a:" }.join("\n")} 1\n"
+    end
+
+    # The subclass carries which limit broke, and stays in the family callers handle per file.
+    it 'refuses content nested past the depth limit, naming the limit rather than the file' do
+      expect { described_class.parse(nested(limits::MAX_DEPTH + 1)) }
+        .to raise_error(limits::Exceeded, "exceeds the maximum nesting depth of #{limits::MAX_DEPTH}") { |e|
+          expect(e.kind).to eq(:depth)
+          expect(e).to be_a(IPaaS::Error)
+        }
+    end
+
+    it 'refuses content over the size limit, naming that limit instead' do
+      expect { described_class.parse("a: #{'x' * limits::MAX_BYTES}\n") }
+        .to raise_error(limits::Exceeded, "exceeds the maximum size of #{limits::MAX_BYTES / 1024} KB") { |e|
+          expect(e.kind).to eq(:size)
+        }
+    end
+
+    it 'parses content sitting exactly on the depth limit, so the cap is reachable' do
+      at_the_limit = nested(limits::MAX_DEPTH)
+      expect(limits.depth(at_the_limit)).to eq(limits::MAX_DEPTH) # pins the helper's arithmetic
+
+      expect(described_class.parse(at_the_limit)).to be_a(Hash)
+    end
+
+    it 'parses content sitting exactly on the size limit, so that cap is reachable too' do
+      at_the_limit = "a: #{'x' * (limits::MAX_BYTES - 4)}\n"
+      expect(limits.bytes(at_the_limit)).to eq(limits::MAX_BYTES) # pins the helper's arithmetic
+
+      expect(described_class.parse(at_the_limit)).to be_a(Hash)
+    end
+
+    it 'parses content that is wide but shallow, however many collections it holds' do
+      wide = (0...(limits::MAX_DEPTH * 4)).map { |index| "key#{index}: [#{index}]" }.join("\n")
+      expect(limits.depth(wide)).to eq(2) # a node counter, not a depth counter, would reject this
+
+      expect(described_class.parse(wide).size).to eq(limits::MAX_DEPTH * 4)
+    end
+
+    # One guard ahead of the parse covers the tolerant path too.
+    it 'refuses over-depth content on the tolerant path too, rather than tolerating it' do
+      over_depth_with_a_disallowed_class =
+        "#{nested(limits::MAX_DEPTH + 1)}b: !ruby/object:Unknown {}\n"
+
+      expect { described_class.parse(over_depth_with_a_disallowed_class, tolerant: true) }
+        .to raise_error(limits::Exceeded, /maximum nesting depth/)
+    end
+
+    it 'leaves a value that was never YAML alone, since there is no file to judge' do
+      deep_hash = (0...(limits::MAX_DEPTH + 1)).inject({ 'a' => 1 }) { |inner, _| { 'a' => inner } }
+
+      expect(described_class.parse(deep_hash)).to eq(deep_hash)
     end
   end
 end

@@ -302,6 +302,47 @@ describe IPaaS::Connector do
     end
   end
 
+  describe 'field options consistency' do
+    before(:each) do
+      skip_function_capture_validation
+    end
+
+    def define_schema_with_list(schema, &options)
+      schema.field :space_id, 'Space', :string
+      schema.field :list_id, 'List', :string do
+        options(&options)
+      end
+    end
+
+    def define_connector(trigger_options, action_options)
+      connector.trigger('trigger-uuid') do
+        config_schema { |schema| }
+      end
+      define_schema_with_list(connector.trigger('trigger-uuid').config_schema, &trigger_options)
+      connector.action('action-uuid') do
+        input_schema { |schema| }
+      end
+      define_schema_with_list(connector.action('action-uuid').input_schema, &action_options)
+      connector.validate
+    end
+
+    # Each block on its own line: the check compares proc source text, which is read per line.
+    def lists_options = proc { |space_id:| helpers.lists(space_id) }
+    def folders_options = proc { |space_id:| helpers.folders(space_id) }
+
+    it 'accepts the same field id carrying the same options code in a trigger and an action' do
+      define_connector(lists_options, lists_options)
+
+      expect(connector.errors[:base]).to be_empty
+    end
+
+    it 'rejects the same field id carrying different options code in two schemas' do
+      define_connector(lists_options, folders_options)
+
+      expect(connector.errors[:base]).to include('Field (list_id) has different options code in different schemas')
+    end
+  end
+
   describe 'helpers' do
     before do
       connector.helper(:hello_world) do |message = nil|

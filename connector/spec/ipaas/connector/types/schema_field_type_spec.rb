@@ -61,7 +61,7 @@ describe IPaaS::Connector::Types::SchemaFieldType do
     end
 
     {
-      id: 40,
+      id: IPaaS::Connector::Schema::Field::MAX_ID_LENGTH,
       label: 120,
     }.each do |field_id, max_length|
       it "should define max_length of #{field_id} as #{max_length}" do

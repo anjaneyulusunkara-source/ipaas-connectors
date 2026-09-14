@@ -4,7 +4,7 @@ module IPaaS
       module HTTP
         OPEN_TIMEOUT = 5 # 5 seconds
         TIMEOUT = 300 # 5 minutes
-        VALID_METHODS = Faraday::Connection::METHODS
+        VALID_METHODS = IPaaS.make_shareable(Faraday::Connection::METHODS.dup)
 
         extend ActiveSupport::Concern
         extend IPaaS::Connector::Common::ProcRules::ProcSafe

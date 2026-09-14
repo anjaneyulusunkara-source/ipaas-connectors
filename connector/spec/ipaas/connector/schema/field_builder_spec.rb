@@ -1,6 +1,7 @@
 require 'spec_helper'
 
 RSpec.describe IPaaS::Connector::Schema::FieldBuilder do
+  max_id_length = IPaaS::Connector::Schema::Field::MAX_ID_LENGTH
   def create_structure(*json_samples)
     IPaaS::Connector::Schema::StructureInferrer.infer(*json_samples)
   end
@@ -187,38 +188,41 @@ RSpec.describe IPaaS::Connector::Schema::FieldBuilder do
       end
     end
 
-    it 'truncates to 40 characters' do
-      long_key = 'a_very_long_key_name_that_exceeds_forty_characters_total'
+    it 'truncates to the maximum field id length' do
+      long_key = "a_very_long_key_name_that_exceeds_the_limit_#{'x' * 40}"
       result = described_class.to_field_id(long_key)
-      expect(result.to_s.length).to be <= 40
+      expect(long_key.length).to be > max_id_length
+      expect(result.to_s.length).to eq(max_id_length)
     end
   end
 
   describe 'ID deduplication on truncation collision' do
-    # 'a' * 50 and 'a' * 49 + 'b' both truncate to 'a' * 40 via to_field_id
-    it 'appends _N suffix (trimming base to stay within 40 chars) for colliding IDs' do
-      structure = create_structure("{\"#{'a' * 50}\": \"val1\", \"#{'a' * 49}b\": \"val2\"}")
+    # Two keys that differ only past the truncation point collapse to the same id.
+    it 'appends _N suffix (trimming the base to stay within the limit) for colliding IDs' do
+      long = 'a' * (max_id_length + 10)
+      alt = "#{'a' * (max_id_length + 9)}b"
+      structure = create_structure({ long => 'val1', alt => 'val2' }.to_json)
       fields = described_class.build(structure)
       ids = fields.map { |f| f.id.to_s }
-      expect(ids.first).to eq('a' * 40)
-      expect(ids.second).to eq("#{'a' * 38}_2")
-      expect(ids.map(&:length)).to all(be <= 40)
+      expect(ids.first).to eq('a' * max_id_length)
+      expect(ids.second).to eq("#{'a' * (max_id_length - 2)}_2")
+      expect(ids.map(&:length)).to all(be <= max_id_length)
       expect(fields).to all(be_valid)
     end
 
     it 'skips a generated candidate that collides with a naturally occurring key' do
-      # Three keys: two that truncate to the same base, plus one that naturally maps
-      # to the first candidate suffix (_2). The dedup must skip _2 and use _3.
-      base = 'a' * 50         # truncates to 'a' * 40
-      base_alt = "#{'a' * 49}b" # also truncates to 'a' * 40
-      natural_collision = "#{'a' * 38}_2" # naturally maps to the first candidate
+      # Three keys: two that truncate to the same base, plus one that naturally maps to the first
+      # candidate suffix, so the de-duplicator has to step past a suffix that is already taken.
+      base = 'a' * (max_id_length + 10)
+      base_alt = "#{'a' * (max_id_length + 9)}b"
+      natural_collision = "#{'a' * (max_id_length - 2)}_2"
 
       json = { base => 'v1', base_alt => 'v2', natural_collision => 'v3' }.to_json
       fields = described_class.build(create_structure(json))
       ids = fields.map { |f| f.id.to_s }
 
-      expect(ids).to all(satisfy { |id| id.length <= 40 })
-      expect(ids.uniq.length).to eq(ids.length), "expected all IDs to be unique, got: #{ids}"
+      expect(ids).to eq(['a' * max_id_length, "#{'a' * (max_id_length - 2)}_2", "#{'a' * (max_id_length - 2)}_1"])
+      expect(ids).to all(satisfy { |id| id.length <= max_id_length })
     end
   end
 

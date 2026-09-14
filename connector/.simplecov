@@ -1,4 +1,4 @@
-SimpleCov.start do
+SimpleCov.configure do
   enable_coverage :branch
-  add_filter '/spec/'
+  skip '/spec/'
 end

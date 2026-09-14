@@ -10,20 +10,26 @@ module IPaaS
         proc_safe :helpers
 
         included do
-          attr_accessor :helpers do
+          attr_accessor :helpers_definition do
             IPaaS::Connector::Common::Helpers.new
           end
           validate :helpers_valid?
+
+          # Defined on the including class, not this module: `HelpersRef` installs its own
+          # `helpers` the same way, and would otherwise resolve a template to its connector.
+          def helpers
+            helpers_definition.for_proc
+          end
         end
 
         def helper(name, &block)
-          helpers.define_helper(name, &block)
+          helpers_definition.define_helper(name, &block)
         end
 
         def helpers_valid?
-          return if helpers.valid?
+          return if helpers_definition.valid?
 
-          self.errors.add(:helpers, "Helpers have errors: #{helpers.errors}")
+          self.errors.add(:helpers, "Helpers have errors: #{helpers_definition.errors}")
         end
       end
     end

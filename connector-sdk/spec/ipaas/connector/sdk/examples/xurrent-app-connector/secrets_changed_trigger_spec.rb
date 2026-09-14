@@ -276,7 +276,7 @@ describe 'Secrets Changed Trigger', :trigger do
         .to_return(body: not_found_graphql_response('webhookUpdate'))
     end
 
-    # rubocop:disable Metrics/MethodLength
+    # rubocop:disable-next Metrics/MethodLength
     def create_provider_secrets_webhook_stub(references: [], name: 'iPaaS - Secrets Changed')
       variables = {
         event: 'app_instance.secrets-update',
@@ -290,7 +290,6 @@ describe 'Secrets Changed Trigger', :trigger do
         .with(body: graphql_request_body(create_secrets_webhook_query, variables: variables))
         .to_return(body: { data: create_secrets_webhook_response }.to_json)
     end
-    # rubocop:enable Metrics/MethodLength
 
     it 'should create the provider webhook policy and secrets webhook' do
       create_provider_webhook_policy_stub

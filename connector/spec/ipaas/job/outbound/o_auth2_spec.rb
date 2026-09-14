@@ -243,6 +243,16 @@ describe IPaaS::Job::Outbound::OAuth2 do
       expect(IPaaS::Job::Outbound::OAuth2::REFRESH_TIMEOUT)
         .to be < IPaaS::Job::Outbound::OAuth2::LOCK_TTL_SECONDS
     end
+
+    it 'performs exactly one token exchange per lock acquisition' do
+      exchanges = 0
+      allow(context).to receive(:http_post) do |*_args, **_options|
+        exchanges += 1
+        fresh_response
+      end
+      context.oauth2_authorization_header(url, body)
+      expect(exchanges).to eq(1)
+    end
   end
 
   describe 'request body must not appear in error path' do
@@ -426,6 +436,251 @@ describe IPaaS::Job::Outbound::OAuth2 do
 
       it 'returns the Bearer header without raising' do
         expect(context.oauth2_authorization_header(url, body)).to eq('Bearer AT-OK')
+      end
+    end
+  end
+
+  describe 'client credentials are unaffected by the rotation keyword' do
+    let(:client_credentials_key) do
+      'oauth2_authentication_header_3733caef74e7c141e7b62483045cca1abd890546bb124b8eb2252dbfe9b04344'
+    end
+
+    # Pinned literal, not a computed comparison: a computed one moves with the code and stays
+    # green while every deployed cached header is silently orphaned.
+    it 'derives the documented cache key, pinned as a literal' do
+      expect(context.send(:create_cache_key, url, body)).to eq(client_credentials_key)
+    end
+
+    it 'derives the same cache key whether or not the rotation keyword is passed' do
+      cache_keys = []
+      allow(context).to receive(:cache_read).and_wrap_original do |orig, key|
+        cache_keys << key
+        orig.call(key)
+      end
+      context.oauth2_authorization_header(url, body)
+      context.cache_clear(context.send(:create_cache_key, url, body))
+      context.oauth2_authorization_header(url, body, rotate_refresh_token: false)
+      expect(cache_keys.uniq).to eq([context.send(:create_cache_key, url, body)])
+    end
+
+    it 'stores no refresh token even when the response carries one' do
+      allow(context).to receive(:http_post).and_return(
+        instance_double(Faraday::Response, status: 200, headers: {},
+                                           body: { access_token: 'AT-1', expires_in: 3600, token_type: 'bearer',
+                                                   refresh_token: 'RT-UNEXPECTED', }.to_json),
+      )
+      context.oauth2_authorization_header(url, body)
+      expect(context.store.read("oauth2_refresh_token_#{client_credentials_key}")).to be_nil
+    end
+  end
+
+  describe 'refresh token rotation' do
+    let(:rotating_context) do
+      Class.new do
+        include IPaaS::Job::Context
+
+        def uuid
+          'oauth-rotation-spec'
+        end
+
+        def outbound_connection
+          self
+        end
+      end.new
+    end
+    let(:refresh_body) do
+      { client_id: 'a', client_secret: 'b', refresh_token: 'RT-0', grant_type: 'refresh_token' }
+    end
+    let(:presented_refresh_tokens) { [] }
+
+    before do
+      exchange = 0
+      allow(rotating_context).to receive(:http_post) do |_post_url, encoded_body, _headers, **_options|
+        presented_refresh_tokens << URI.decode_www_form(encoded_body).to_h['refresh_token']
+        exchange += 1
+        instance_double(
+          Faraday::Response,
+          status: 200,
+          body: { access_token: "AT-#{exchange}", expires_in: 3600, token_type: 'bearer',
+                  refresh_token: "RT-#{exchange}", }.to_json,
+          headers: {},
+        )
+      end
+    end
+
+    def exchange_twice_across_cache_expiry
+      Timecop.freeze do
+        rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+        beyond = (3600 - IPaaS::Job::Outbound::OAuth2::REFRESH_OPEN_TIMEOUT + 1).seconds
+        Timecop.travel(beyond.from_now) do
+          rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+        end
+      end
+    end
+
+    it 'presents the token the provider rotated to on the second exchange' do
+      exchange_twice_across_cache_expiry
+      expect(presented_refresh_tokens).to eq(%w[RT-0 RT-1])
+    end
+
+    def exchange_beyond_cache_expiry(seconds_elapsed)
+      Timecop.travel((3600 - IPaaS::Job::Outbound::OAuth2::REFRESH_OPEN_TIMEOUT + seconds_elapsed).seconds.from_now) do
+        rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+      end
+    end
+
+    def token_response(access_token)
+      body = { access_token: access_token, expires_in: 3600, token_type: 'bearer' }.to_json
+      instance_double(Faraday::Response, status: 200, headers: {}, body: body)
+    end
+
+    def store_key
+      "oauth2_refresh_token_#{rotating_context.send(:create_cache_key, url, refresh_body)}"
+    end
+
+    it 'reports which refresh token it presented and token rotation' do
+      messages = []
+      allow(rotating_context).to receive(:log) { |line| messages << line }
+      Timecop.freeze do
+        rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+        exchange_beyond_cache_expiry(1)
+      end
+      expect(messages).to eq(['Using configured refresh token', 'Storing rotated refresh token',
+                              'Using rotated refresh token', 'Storing rotated refresh token',])
+    end
+
+    it 'persists the rotated token even when the access token in the same response is unusable' do
+      allow(rotating_context).to receive(:http_post) do |_post_url, encoded_body, _headers, **_options|
+        presented_refresh_tokens << URI.decode_www_form(encoded_body).to_h['refresh_token']
+        body = { access_token: 'AT-1', expires_in: 3600, token_type: 'mac', refresh_token: 'RT-1' }.to_json
+        instance_double(Faraday::Response, status: 200, headers: {}, body: body)
+      end
+
+      expect { rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true) }
+        .to raise_error(IPaaS::Error, /unsupported token_type/)
+      expect(rotating_context.decrypt_secret_string(rotating_context.store.read(store_key))).to eq('RT-1')
+      expect(rotating_context.cache_read(rotating_context.send(:create_cache_key, url, refresh_body))).to be_nil
+    end
+
+    it 'follows the chain across three exchanges' do
+      Timecop.freeze do
+        rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+        exchange_beyond_cache_expiry(1)
+        exchange_beyond_cache_expiry(3600)
+      end
+      expect(presented_refresh_tokens).to eq(%w[RT-0 RT-1 RT-2])
+    end
+
+    it 'stores the rotated token encrypted rather than in plain text' do
+      rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+      stored = rotating_context.store.read(store_key)
+      expect(stored).not_to eq('RT-1')
+      expect(rotating_context.decrypt_secret_string(stored)).to eq('RT-1')
+    end
+
+    it 'starts a fresh store identity when the configured token is re-pasted, abandoning the old chain' do
+      repasted = refresh_body.merge(refresh_token: 'RT-PASTED')
+      expect(rotating_context.send(:create_cache_key, url, repasted))
+        .not_to eq(rotating_context.send(:create_cache_key, url, refresh_body))
+      Timecop.freeze do
+        rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+        Timecop.travel(1.hour.from_now) do
+          rotating_context.oauth2_authorization_header(url, repasted, rotate_refresh_token: true)
+        end
+      end
+      expect(presented_refresh_tokens).to eq(%w[RT-0 RT-PASTED])
+    end
+
+    it 'writes no access-token cache entry when persisting the rotated token fails' do
+      original_store = rotating_context.store
+      allow(rotating_context).to receive(:store).and_return(original_store)
+      allow(original_store).to receive(:write).and_wrap_original do |orig, key, value|
+        raise 'store unavailable' if key.start_with?('oauth2_refresh_token_')
+        orig.call(key, value)
+      end
+      expect { rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true) }
+        .to raise_error('store unavailable')
+      cache_key = rotating_context.send(:create_cache_key, url, refresh_body)
+      expect(rotating_context.cache_read(cache_key)).to be_nil
+    end
+
+    it 'still takes the lock when the single-flight kill-switch is set' do
+      acquisitions = 0
+      allow(rotating_context.locker).to receive(:try_acquire).and_wrap_original do |orig, *args, **opts|
+        acquisitions += 1
+        orig.call(*args, **opts)
+      end
+      with_env('OAUTH2_SINGLEFLIGHT_DISABLED', '1') do
+        rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+      end
+      expect(acquisitions).to eq(1)
+    end
+
+    it 'falls back to the configured token when the stored value is blank' do
+      rotating_context.store.write(store_key, '')
+      rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+      expect(presented_refresh_tokens).to eq(['RT-0'])
+    end
+
+    it 'falls back to the configured token and reports it when the stored value cannot be decrypted' do
+      rotating_context.store.write(store_key, 'not-decryptable')
+      messages = []
+      allow(rotating_context).to receive(:log) { |line| messages << line }
+      expect { rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true) }
+        .not_to raise_error
+      expect(presented_refresh_tokens).to eq(['RT-0'])
+      expect(messages).to eq(['Stored refresh token could not be read, using configured refresh token',
+                              'Using configured refresh token', 'Storing rotated refresh token',])
+    end
+
+    it 'reads the rotated token from the store rather than from an instance variable' do
+      shared_store = IPaaS::Job::MemoryStore.new
+      allow(rotating_context.class).to receive(:store_for).and_return(shared_store)
+      second_context = rotating_context.class.new
+      allow(second_context).to receive(:http_post) do |_post_url, encoded_body, _headers, **_options|
+        presented_refresh_tokens << URI.decode_www_form(encoded_body).to_h['refresh_token']
+        token_response('AT-2')
+      end
+      Timecop.freeze do
+        rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+        Timecop.travel(1.hour.from_now) do
+          second_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+        end
+      end
+      expect(presented_refresh_tokens).to eq(%w[RT-0 RT-1])
+    end
+
+    it 'tolerates a non-string refresh_token rather than failing the exchange' do
+      allow(rotating_context).to receive(:http_post) do |_post_url, encoded_body, _headers, **_options|
+        presented_refresh_tokens << URI.decode_www_form(encoded_body).to_h['refresh_token']
+        body = { access_token: 'AT-1', expires_in: 3600, token_type: 'bearer', refresh_token: 12_345 }.to_json
+        instance_double(Faraday::Response, status: 200, headers: {}, body: body)
+      end
+      expect(rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true))
+        .to eq('Bearer AT-1')
+      expect(rotating_context.decrypt_secret_string(rotating_context.store.read(store_key))).to eq('12345')
+    end
+
+    context 'when the provider omits refresh_token from the response' do
+      before do
+        allow(rotating_context).to receive(:http_post) do |_post_url, encoded_body, _headers, **_options|
+          presented_refresh_tokens << URI.decode_www_form(encoded_body).to_h['refresh_token']
+          token_response('AT-1')
+        end
+      end
+
+      it 'writes nothing and keeps presenting the configured token on a cold key' do
+        expect { rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true) }
+          .not_to raise_error
+        expect(rotating_context.store.read(store_key)).to be_nil
+        expect(presented_refresh_tokens).to eq(['RT-0'])
+      end
+
+      it 'leaves an already stored token intact' do
+        rotating_context.store.write(store_key, rotating_context.make_secret_string('RT-STORED'))
+        rotating_context.oauth2_authorization_header(url, refresh_body, rotate_refresh_token: true)
+        expect(rotating_context.decrypt_secret_string(rotating_context.store.read(store_key))).to eq('RT-STORED')
+        expect(presented_refresh_tokens).to eq(['RT-STORED'])
       end
     end
   end

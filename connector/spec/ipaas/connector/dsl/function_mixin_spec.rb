@@ -108,6 +108,30 @@ describe IPaaS::Connector::Dsl::FunctionMixin do
         expect(called).to eq(:bar)
       end
 
+      # An options provider declares its dependencies as keywords, so call_function has to carry
+      # them all the way into the block. Without the ** forwarding this raises ArgumentError.
+      it 'accepts keyword parameters' do
+        test = Class.new(DslTester) do
+          function :parse
+        end.new
+        called = nil
+        fn = ->(space_id:, folder_id: nil) { called = [space_id, folder_id] }
+        test.parse(&fn)
+        test.call_function(:parse, Object.new, space_id: '5')
+        expect(called).to eq(['5', nil])
+      end
+
+      it 'accepts positional and keyword parameters together' do
+        test = Class.new(DslTester) do
+          function :parse
+        end.new
+        called = nil
+        fn = ->(first, space_id:) { called = [first, space_id] }
+        test.parse(&fn)
+        test.call_function(:parse, Object.new, :bar, space_id: '5')
+        expect(called).to eq([:bar, '5'])
+      end
+
       it 'does not fail when the function is not present' do
         test = Class.new(DslTester) do
           function :parse

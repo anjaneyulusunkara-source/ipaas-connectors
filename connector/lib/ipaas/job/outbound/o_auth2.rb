@@ -11,7 +11,8 @@ module IPaaS
                   :clear_oauth2_header_cache
 
         AUTHENTICATION_HEADER_CACHE_KEY = 'oauth2_authentication_header'.freeze
-        CUSTOMER_OAUTH2_ERROR_CODES = %w[invalid_client invalid_grant unauthorized_client invalid_scope].freeze
+        CUSTOMER_OAUTH2_ERROR_CODES =
+          IPaaS.make_shareable(%w[invalid_client invalid_grant unauthorized_client invalid_scope])
 
         LOCK_TTL_SECONDS     = IPaaS::Job::Lock::DEFAULT_TTL_SECONDS
         REFRESH_OPEN_TIMEOUT = 5
@@ -34,38 +35,78 @@ module IPaaS
           }
         end
 
-        def oauth2_authorization_header(url, body, **extra_params)
+        def oauth2_authorization_header(url, body, rotate_refresh_token: false, **extra_params)
           cache_key = create_cache_key(url, body, **extra_params)
           cached = cache_read(cache_key)
           return cached if cached.present?
 
           lock_key = oauth2_lock_key(url, body, **extra_params)
-          refresh_oauth2_token(url, body, cache_key, lock_key)
+          refresh_oauth2_token(url, body, cache_key, lock_key, rotate_refresh_token: rotate_refresh_token)
         end
 
         private
 
-        # Operational kill-switch (OAUTH2_SINGLEFLIGHT_DISABLED=1): bypass the
-        # cross-process lock and revert to the pre-singleflight code path.
-        # Token=nil signals the persist branch to write the cache directly.
-        def refresh_oauth2_token(url, body, cache_key, lock_key)
-          if ENV['OAUTH2_SINGLEFLIGHT_DISABLED'] == '1'
-            refresh_under_lock(url, body, cache_key, lock_key, nil)
+        # Operational kill-switch (OAUTH2_SINGLEFLIGHT_DISABLED=1) bypasses the cross-process
+        # lock, where token=nil signals the persist branch to write the cache directly. It does
+        # not apply while rotating: two unlocked workers would each present the stored token and
+        # clobber the other's replacement, leaving the chain pointing at a retired credential.
+        def refresh_oauth2_token(url, body, cache_key, lock_key, rotate_refresh_token:)
+          if !rotate_refresh_token && ENV['OAUTH2_SINGLEFLIGHT_DISABLED'] == '1'
+            refresh_under_lock(url, body, cache_key, lock_key, nil, rotate_refresh_token: false)
           else
             with_lock(lock_key, ttl: LOCK_TTL_SECONDS) do |token|
-              refresh_under_lock(url, body, cache_key, lock_key, token)
+              refresh_under_lock(url, body, cache_key, lock_key, token, rotate_refresh_token: rotate_refresh_token)
             end
           end
         end
 
-        def refresh_under_lock(url, body, cache_key, lock_key, token)
+        def refresh_under_lock(url, body, cache_key, lock_key, token, rotate_refresh_token:)
           cached = cache_read(cache_key)
           return cached if cached.present?
 
-          result = request_authorization_header(url, body)
-          cache_time = result[:response_body]['expires_in'].to_i - REFRESH_OPEN_TIMEOUT
-          persist_refreshed_token(lock_key, token, cache_key, result[:header], cache_time)
-          result[:header]
+          response_body = exchange_token(url, body, cache_key, rotate_refresh_token)
+          header = "Bearer #{extract_bearer_token(response_body)}"
+          cache_time = response_body['expires_in'].to_i - REFRESH_OPEN_TIMEOUT
+          persist_refreshed_token(lock_key, token, cache_key, header, cache_time)
+          header
+        end
+
+        def exchange_token(url, body, cache_key, rotate_refresh_token)
+          return request_token_response(url, body) unless rotate_refresh_token
+
+          exchange_body = body.merge(refresh_token: resolve_refresh_token(cache_key, body))
+          response_body = request_token_response(url, exchange_body)
+          persist_rotated_refresh_token(cache_key, response_body)
+          response_body
+        end
+
+        def resolve_refresh_token(cache_key, body)
+          stored = read_stored_refresh_token(cache_key).presence
+          log(stored ? 'Using rotated refresh token' : 'Using configured refresh token')
+          stored || body[:refresh_token]
+        end
+
+        def read_stored_refresh_token(cache_key)
+          stored = outbound_connection.store.read(refresh_token_store_key(cache_key))
+          return nil if stored.blank?
+
+          decrypt_secret_string(stored)
+        rescue IPaaS::Encryption::Errors::Decryption
+          log('Stored refresh token could not be read, using configured refresh token')
+          nil
+        end
+
+        def persist_rotated_refresh_token(cache_key, response_body)
+          rotated = response_body['refresh_token'].to_s
+          return if rotated.blank?
+
+          # Logged before the write: a process dying mid-write leaves this as the only trace.
+          log('Storing rotated refresh token')
+          outbound_connection.store.write(refresh_token_store_key(cache_key), make_secret_string(rotated))
+        end
+
+        def refresh_token_store_key(cache_key)
+          "oauth2_refresh_token_#{cache_key}"
         end
 
         def persist_refreshed_token(lock_key, token, cache_key, value, cache_time)
@@ -89,12 +130,8 @@ module IPaaS
           "oauth2:#{create_cache_key(url, body, **extra_params)}:refresh"
         end
 
-        def request_authorization_header(url, body)
-          response = call_oauth2_endpoint(url, body)
-          response_body = JSON.parse(response.body)
-          access_token = extract_bearer_token(response_body)
-
-          { header: "Bearer #{access_token}", response_body: response_body }
+        def request_token_response(url, body)
+          JSON.parse(call_oauth2_endpoint(url, body).body)
         end
 
         def call_oauth2_endpoint(url, body)

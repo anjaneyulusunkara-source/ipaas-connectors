@@ -34,7 +34,7 @@ module IPaaS
                 @base_url = nil
               end
 
-              # rubocop:disable Metrics/MethodLength
+              # rubocop:disable-next Metrics/MethodLength
               def verify!(token, account_id, solution_uuid, connection_uuid)
                 raise IPaaS::Error, 'OAuth inbound verifier not configured' unless configured?
 
@@ -50,7 +50,6 @@ module IPaaS
               rescue ::JWT::DecodeError => e
                 raise IPaaS::Error, "Unable to decode JWT: #{e}"
               end
-              # rubocop:enable Metrics/MethodLength
 
               private
 
