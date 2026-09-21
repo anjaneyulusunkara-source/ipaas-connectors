@@ -14,6 +14,9 @@ module IPaaS
     #  * trigger (IPaaS::Connector::TriggerTemplate, multiple allowed)
     #  * action (IPaaS::Connector::ActionTemplate, multiple allowed)
     class Connector
+      # The maximum file size iPaaS allows for connectors, above this value they will not be loaded.
+      MAX_SOURCE_FILE_BYTES = 150.kilobytes
+
       extend IPaaS::Connector::Common::ProcRules::ProcSafe
 
       proc_safe :connection, :connector, :trigger, :action, :helper, :type_enumeration,
@@ -41,6 +44,7 @@ module IPaaS
         []
       end
       validate :actions_valid?
+      validate :field_options_consistent?
 
       def inbound_connection(&block)
         return @inbound_connection unless block
@@ -49,7 +53,7 @@ module IPaaS
         IPaaS::Connector::InboundConnectionTemplate.new.tap do |inbound|
           @inbound_connection = inbound
           inbound.connector = self
-          inbound.helpers.parent_helpers = self.helpers
+          inbound.helpers_definition.parent_helpers = self.helpers_definition
           inbound.instance_eval(&block)
         end
       end
@@ -61,7 +65,7 @@ module IPaaS
         IPaaS::Connector::OutboundConnectionTemplate.new.tap do |outbound|
           @outbound_connection = outbound
           outbound.connector = self
-          outbound.helpers.parent_helpers = self.helpers
+          outbound.helpers_definition.parent_helpers = self.helpers_definition
           outbound.instance_eval(&block)
         end
       end
@@ -75,7 +79,7 @@ module IPaaS
         IPaaS::Connector::TriggerTemplate.new(uuid).tap do |t|
           t.connector = self
           triggers << t
-          t.helpers.parent_helpers = self.helpers
+          t.helpers_definition.parent_helpers = self.helpers_definition
           t.instance_eval(&block)
         end
       end
@@ -86,13 +90,13 @@ module IPaaS
         IPaaS::Connector::ActionTemplate.new(uuid).tap do |a|
           a.connector = self
           actions << a
-          a.helpers.parent_helpers = self.helpers
+          a.helpers_definition.parent_helpers = self.helpers_definition
           a.instance_eval(&block)
         end
       end
 
       def helper(name, &block)
-        helpers.define_helper(name, &block)
+        helpers_definition.define_helper(name, &block)
       end
 
       def update_available?
@@ -147,6 +151,29 @@ module IPaaS
           self.errors.add(:actions,
                           "Action #{action.uuid} has errors: #{action.full_error_messages}")
         end
+      end
+
+      # The same field id means the same thing across the schemas that carry options, so two of them
+      # giving it different options code is a copy-paste slip, not a feature.
+      def field_options_consistent?
+        options_sources_by_field_id.each do |field_id, sources|
+          next if sources.uniq.one?
+
+          self.errors.add(:base, "Field (#{field_id}) has different options code in different schemas")
+        end
+      end
+
+      def options_sources_by_field_id
+        fields_with_options.group_by(&:id).transform_values do |fields|
+          fields.map { |field| IPaaS::Connector::Common::ProcHelper.proc_source(field.options).squish }
+        end
+      end
+
+      # Options are supported on trigger config and action input schemas only. Connection config,
+      # output and iteration state schemas, and nested fields, are out of scope until #82325699.
+      def fields_with_options
+        schemas = triggers.map(&:config_schema) + actions.map(&:input_schema)
+        schemas.compact.flat_map(&:fields).select(&:options)
       end
     end
   end

@@ -677,8 +677,12 @@ describe IPaaS::Connector::Connection do
         .to raise_error(NoMethodError, "Missing helper method 'unknown_helper'.")
     end
 
-    it 'has no helpers when the connection has no connector' do
-      expect(IPaaS::Connector::Connection.new('no-connector-uuid').helpers).to be_nil
+    # A connection with no connector still answers with a proxy rather than nil.
+    it 'refuses every name when the connection has no connector' do
+      connection = IPaaS::Connector::Connection.new('no-connector-uuid')
+
+      expect { connection.helpers.send(:eval, '1 + 1') }
+        .to raise_error(NoMethodError, "Missing helper method 'send'.")
     end
   end
 
@@ -705,8 +709,9 @@ describe IPaaS::Connector::Connection do
     end
 
     def validator_signatures(klass, attribute)
-      klass.validators_on(attribute).map { |validator| [validator.kind, validator.options] }
-                                    .sort_by { |kind, _options| kind.to_s }
+      klass.validators_on(attribute)
+           .map { |validator| [validator.kind, validator.options] }
+           .sort_by { |kind, _options| kind.to_s }
     end
   end
 end

@@ -86,6 +86,170 @@ describe IPaaS::Connector::Common::ProcHelper do
     end
   end
 
+  context 'deeply nested expression' do
+    before(:each) { described_class.validated_before.clear }
+
+    def deeply_nested(depth) = "#{'(' * depth}1#{')' * depth}"
+
+    # The guard turns a stack overflow into a field error. Overflowing for real to get there costs
+    # a deep stack and the memory to unwind it, and lands differently on different machines, so
+    # inject it. That real sources reach it is covered by `.unevaluable_reason` above.
+    def overflow_the_parse!
+      allow_any_instance_of(described_class).to receive(:parse_ast).and_raise(SystemStackError)
+    end
+
+    describe '.unevaluable_reason' do
+      it 'names nesting for a body that nests past the limit' do
+        past_limit = 'true ? 1 : ' * (described_class::MAX_NESTING_DEPTH + 1)
+        expect(described_class.unevaluable_reason("#{past_limit}1")).to eq(:too_deeply_nested)
+      end
+
+      it 'accepts a large but shallow body, so size alone is not what refuses' do
+        shallow = "'#{'a' * (described_class::MAX_SOURCE_BYTES + 1)}'"
+        expect(shallow.bytesize).to be > described_class::MAX_SOURCE_BYTES
+        expect(described_class.unevaluable_reason(shallow)).to be_nil
+      end
+
+      # A body that will not parse can never load, and evaluating it to find out why recurses
+      # far deeper than parsing it does. Nesting was never measured, so it must not be claimed.
+      it 'names the parse failure, not nesting, for a body holding a syntax error' do
+        expect(described_class.unevaluable_reason("'a'\ndef (\n")).to eq(:unparseable)
+      end
+
+      # Ripper raises here rather than returning nil, so an unrescued call escapes validation
+      # entirely instead of refusing the source.
+      it 'names the parse failure for a body naming an encoding that does not exist' do
+        expect(described_class.unevaluable_reason("# encoding: not-a-real-encoding\n1 + 1"))
+          .to eq(:unparseable)
+      end
+
+      it 'names the parse failure for a body no parse tree can be built for' do
+        expect(described_class.unevaluable_reason("#{'(' * 20_000}1")).to eq(:unparseable)
+      end
+    end
+
+    it 'refuses a source too large to parse safely' do
+      oversized = "'#{'a' * (described_class::MAX_SOURCE_BYTES + 1)}'"
+      helper = described_class.new(Object.new, oversized)
+      expect(helper.valid?).to be(false)
+      expect(helper.errors).to eq([described_class::TOO_LARGE_MESSAGE])
+    end
+
+    # The pill check reads comments through a full parse, so the size refusal only keeps an
+    # unbounded source away from the parsers if it stops the checks after it from running.
+    it 'refuses an oversized source without parsing it, even when it holds a data pill' do
+      oversized = "mapping[\#{trigger_output}]\n#{"a = 1\n" * (described_class::MAX_SOURCE_BYTES / 3)}"
+      expect(oversized.bytesize).to be > described_class::MAX_SOURCE_BYTES
+
+      expect(IPaaS::Connector::Common::SourceParser).not_to receive(:read)
+      helper = described_class.new(Object.new, oversized)
+      expect(helper.valid?).to be(false)
+      expect(helper.errors).to eq([described_class::TOO_LARGE_MESSAGE])
+    end
+
+    it 'accepts a source below the size cap, so the cap is what rejects' do
+      helper = described_class.new(Object.new, "'#{'a' * (described_class::MAX_SOURCE_BYTES - 100)}'")
+      expect(helper.valid?).to be(true)
+    end
+
+    # Two Ripper sexp nodes per parenthesis, plus four for the program and the constant, so these
+    # two counts sit either side of the limit and nothing between them is untested.
+    def last_accepted_nesting = (described_class::MAX_NESTING_DEPTH - 4) / 2
+
+    it 'accepts a source at the limit, so the limit is what rejects' do
+      helper = described_class.new(Object.new, deeply_nested(last_accepted_nesting))
+      expect(helper.valid?).to be(true)
+      expect(helper.errors).to be_empty
+    end
+
+    it 'refuses a source one level past the limit' do
+      helper = described_class.new(Object.new, deeply_nested(last_accepted_nesting + 1))
+      expect(helper.valid?).to be(false)
+      expect(helper.errors).to eq([described_class::TOO_COMPLEX_MESSAGE])
+    end
+
+    # Fixing the pill would leave the author with the restructure still to do, so the refusal that
+    # demands it is the one worth reporting. The reverse order holds where a pill is why the source
+    # will not parse at all, which the example on that is about.
+    it 'reports needing a restructure over a data pill, when a source has both' do
+      helper = described_class.new(Object.new, "#{deeply_nested(250)}\n\#{pill}")
+
+      expect(helper.valid?).to be(false)
+      expect(helper.errors).to eq([described_class::TOO_COMPLEX_MESSAGE])
+    end
+
+    it 'counts nesting the parser recurses over, not source length' do
+      flat = (0..described_class::MAX_NESTING_DEPTH).map { |i| "a#{i} = #{i}" }.join("\n")
+      helper = described_class.new(Object.new, flat)
+      expect(helper.valid?).to be(true)
+      expect(helper.errors).to be_empty
+    end
+
+    it 'refuses a bracket-free deep expression, which no bracket count would catch' do
+      past_limit = 'true ? 1 : ' * (described_class::MAX_NESTING_DEPTH + 1)
+      helper = described_class.new(Object.new, "#{past_limit}1")
+      expect(helper.valid?).to be(false)
+      expect(helper.errors).to eq([described_class::TOO_COMPLEX_MESSAGE])
+    end
+
+    it 'reports a field error instead of letting SystemStackError escape' do
+      overflow_the_parse!
+
+      helper = described_class.new(Object.new, '1 + 1')
+      valid = nil
+      expect { valid = helper.valid? }.not_to raise_error
+      expect(valid).to be(false)
+      expect(helper.errors).to eq([described_class::TOO_COMPLEX_MESSAGE])
+    end
+
+    it 'does not cache the rejection, so the source is re-checked rather than passing later' do
+      overflow_the_parse!
+
+      described_class.new(Object.new, '1 + 1').valid?
+      expect(described_class.validated_before).to be_empty
+      expect(described_class.new(Object.new, '1 + 1').valid?).to be(false)
+    end
+
+    it 'leaves the process able to validate and to keep rejecting rule violations' do
+      overflowing = described_class.new(Object.new, '1 + 1')
+      allow(overflowing).to receive(:parse_ast).and_raise(SystemStackError)
+      expect(overflowing.valid?).to be(false)
+
+      expect(described_class.new(Object.new, '1 + 1').valid?).to be(true)
+      rejected = described_class.new(Object.new, '$foo')
+      expect(rejected.valid?).to be(false)
+      expect(rejected.errors).to eq(["Access to '$foo' not allowed."])
+    end
+
+    it 'accepts an expression with nothing to parse' do
+      expect(described_class.new(Object.new, '').valid?).to be(true)
+      expect(described_class.new(Object.new, '# only a comment').valid?).to be(true)
+    end
+
+    it 'does not relabel an ordinary syntax error as a complexity failure' do
+      helper = described_class.new(Object.new, 'def (')
+      expect(helper.valid?).to be(false)
+      expect(helper.errors).not_to include(described_class::TOO_COMPLEX_MESSAGE)
+      expect(helper.errors.join).to match(/line 1: .*syntax error/)
+    end
+
+    it 'reports a field error for a bad encoding even when the source holds a data pill' do
+      helper = described_class.new(Object.new, "# encoding: not-a-real-encoding\n\"\#{pill}\"")
+      valid = nil
+      expect { valid = helper.valid? }.not_to raise_error
+      expect(valid).to be(false)
+      expect(helper.errors.join).to include('not-a-real-encoding')
+    end
+
+    it 'reports a field error naming the encoding rather than letting ArgumentError escape' do
+      helper = described_class.new(Object.new, "# encoding: not-a-real-encoding\n1 + 1")
+      valid = nil
+      expect { valid = helper.valid? }.not_to raise_error
+      expect(valid).to be(false)
+      expect(helper.errors.join).to include('not-a-real-encoding')
+    end
+  end
+
   context 'proc from string' do
     it 'should execute basic proc' do
       helper = IPaaS::Connector::Common::ProcHelper.new(Object.new, "'Hello World!'")
@@ -826,7 +990,7 @@ describe IPaaS::Connector::Common::ProcHelper do
     end
   end
 
-  context 'bare data pill interpolation (request 79269379)' do
+  context 'bare data pill interpolation' do
     it 'flags a data pill used outside a string' do
       source = <<~'RUBY'
         mapping = { "critical" => "top" }
@@ -864,9 +1028,8 @@ describe IPaaS::Connector::Common::ProcHelper do
       expect(helper.errors.join("\n")).to include('outside a string')
     end
 
-    # Single-line bare pill: the `#{...}` comment eats the closing `]`, so RuboCop returns a nil
-    # ast WITH a syntax diagnostic ("unexpected token"/"expected a matching ]"). The actionable
-    # pill message must win over that cryptic parser error, and it must be the only error.
+    # Here the `#{...}` comment eats the closing `]`, leaving a source that will not parse. The
+    # actionable pill message must win over the syntax error, and must be the only error.
     it 'flags a single-line bare data pill with the actionable message, not the parser error' do
       helper = described_class.new(Object.new, 'mapping[#{trigger_output}]')
       expect(helper.valid?).to be(false)

@@ -1,2 +1,4 @@
 --color
 --format progress
+--require ./spec/support/file_path_formatter.rb
+--format FilePathFormatter

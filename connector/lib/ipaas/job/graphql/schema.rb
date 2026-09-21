@@ -56,8 +56,8 @@ module IPaaS
           'JSON' => :any,
         }.freeze
 
-        NESTED_KINDS = %w[OBJECT INTERFACE UNION INPUT_OBJECT].freeze
-        WRAPPER_KINDS = %w[NON_NULL LIST].freeze
+        NESTED_KINDS = IPaaS.make_shareable(%w[OBJECT INTERFACE UNION INPUT_OBJECT])
+        WRAPPER_KINDS = IPaaS.make_shareable(%w[NON_NULL LIST])
 
         class << self
           def gql_find_type(schema_data, type_name)
@@ -111,7 +111,7 @@ module IPaaS
 
             root_type['fields']&.filter_map do |f|
               name = f['name']
-              next if name.length > 40
+              next if name.length > IPaaS::Connector::Schema::Field::MAX_ID_LENGTH
 
               { id: name, label: IPaaS::Job::Humanize.humanize_field_name(name) }
             end || []
@@ -153,7 +153,7 @@ module IPaaS
             field_name = gql_field['name']
             %w[pageInfo totalCount].include?(field_name) ||
               gql_required_args?(gql_field) ||
-              field_name.length > 40
+              field_name.length > IPaaS::Connector::Schema::Field::MAX_ID_LENGTH
           end
 
           private

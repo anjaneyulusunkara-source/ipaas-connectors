@@ -1,6 +1,8 @@
 require 'spec_helper'
 
 describe IPaaS::Connector::Types::RubyType do
+  before(:each) { IPaaS::Connector::Common::ProcHelper.validated_before.clear }
+
   it 'should define the ruby class' do
     expect(subject.ruby_class).to eq(String)
   end
@@ -47,6 +49,17 @@ describe IPaaS::Connector::Types::RubyType do
       errors = []
       expect(subject.valid?('output[:discard] = ENV["a"] == "a"', errors)).to eq(false)
       expect(errors).to contain_exactly("Access to 'ENV' not allowed.")
+    end
+
+    it 'should return false naming the problem when the proc exhausts the stack' do
+      # Injected rather than performed: overflowing for real costs a deep stack and the memory to
+      # unwind it. What matters here is that the message reaches this surface either way.
+      allow_any_instance_of(IPaaS::Connector::Common::ProcHelper)
+        .to receive(:parse_ast).and_raise(SystemStackError)
+
+      errors = []
+      expect(subject.valid?('1 + 1', errors)).to eq(false)
+      expect(errors).to contain_exactly(IPaaS::Connector::Common::ProcHelper::TOO_COMPLEX_MESSAGE)
     end
 
     it 'should return false for proc with invalid ruby' do

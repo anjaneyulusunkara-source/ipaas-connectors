@@ -5,6 +5,207 @@ describe IPaaS::Connector::Schema::Field do
     IPaaS::Connector::Schema::Field.new(id: :foo, label: 'Foo label', type: :string)
   end
 
+  # A block built inside a method so its binding holds no locals: the options function rejects
+  # blocks that capture them.
+  def no_dependencies = -> { [] }
+  def one_required = ->(workspace_id:) { [workspace_id] }
+  def required_and_optional = ->(space_id:, folder_id: nil) { [space_id, folder_id] }
+  # `options do |x| end` is a proc, not a lambda, so a missing colon binds nil instead of raising.
+  # The proc form is what a connector actually ships, so the rejected shapes are built that way.
+  def positional_dependency = proc { |space_id| [space_id] }
+  def keyword_catch_all = proc { |**dependencies| [dependencies] }
+  def block_parameter = proc { |&callback| [callback] }
+
+  describe 'option_dependencies' do
+    it 'is empty when the field declares no options function at all' do
+      expect(field.option_dependencies).to eq([])
+    end
+
+    it 'is empty when the options block takes no keywords' do
+      field.options(&no_dependencies)
+
+      expect(field.option_dependencies).to eq([])
+    end
+
+    it 'reads a required keyword off the block' do
+      field.options(&one_required)
+
+      expect(field.option_dependencies).to eq([:workspace_id])
+    end
+
+    it 'reports an optional keyword as a dependency too' do
+      field.options(&required_and_optional)
+
+      expect(field.option_dependencies).to eq([:space_id, :folder_id])
+    end
+  end
+
+  describe 'required_option_dependencies' do
+    it 'is empty when the field declares no options function at all' do
+      expect(field.required_option_dependencies).to eq([])
+    end
+
+    it 'is empty when the options block takes no keywords' do
+      field.options(&no_dependencies)
+
+      expect(field.required_option_dependencies).to eq([])
+    end
+
+    it 'reads a keyword written without a default' do
+      field.options(&one_required)
+
+      expect(field.required_option_dependencies).to eq([:workspace_id])
+    end
+
+    it 'leaves out a keyword that carries a default, because the block can run without it' do
+      field.options(&required_and_optional)
+
+      expect(field.required_option_dependencies).to eq([:space_id])
+    end
+  end
+
+  # An options block and an enumeration build the same control from the same three types, so a
+  # block on any other type would replace that type's own editor with a string picker.
+  describe 'options on a type that cannot hold a picked id' do
+    # Built in a method so the lambda's binding holds no locals; the options function rejects a
+    # block that captures them.
+    def picker_options
+      -> { ['one'] }
+    end
+
+    def field_with_options(type)
+      field = described_class.new(id: :picker, label: 'Picker', type: type)
+      field.options(&picker_options)
+      field
+    end
+
+    IPaaS::Connector::Schema::Field::ENUMERABLE_TYPES.each do |type|
+      it "accepts an options block on a #{type} field" do
+        expect(field_with_options(type)).to be_valid
+      end
+    end
+
+    [:hash, :date, :boolean, :binary].each do |type|
+      it "rejects an options block on a #{type} field, as an enumeration already is" do
+        field = field_with_options(type)
+
+        expect(field).to be_invalid
+        expect(field.errors[:options].join).to include('string, integer, and time zone')
+      end
+    end
+  end
+
+  describe 'options on a field inside an array' do
+    # dependency_values carries one value per sibling id, so it cannot say "row 3's space_id".
+    # A field under an array has no addressable dependencies, so the endpoint could never serve it.
+    let(:array_nesting_error) { 'cannot provide dynamic options inside an array field' }
+
+    def array_field_with(child)
+      IPaaS::Connector::Schema::Field.new(id: :rows, label: 'Rows', type: :nested, array: true)
+                                     .tap { |parent| parent.fields = [child] }
+    end
+
+    def child_with_options
+      IPaaS::Connector::Schema::Field.new(id: :list_id, label: 'List', type: :string)
+                                     .tap { |child| child.options(&no_dependencies) }
+    end
+
+    def child_without_options
+      IPaaS::Connector::Schema::Field.new(id: :list_id, label: 'List', type: :string)
+    end
+
+    it 'rejects an options block on a field nested inside an array field' do
+      parent = array_field_with(child_with_options)
+      parent.valid?
+
+      expect(parent.errors[:fields].join).to include("#{array_nesting_error}, so list_id")
+    end
+
+    it 'accepts the same nesting when the child declares no options' do
+      parent = array_field_with(child_without_options)
+      parent.valid?
+
+      expect(parent.errors[:fields].join).not_to include(array_nesting_error)
+    end
+
+    # The guard walks descendants, so an extra level between the array and the block is still caught.
+    it 'rejects an options block one level deeper inside an array field' do
+      group = described_class.new(id: :group, label: 'Group', type: :nested)
+                             .tap { |field| field.fields = [child_with_options] }
+      parent = array_field_with(group)
+      parent.valid?
+
+      expect(parent.errors[:fields].join).to include("#{array_nesting_error}, so list_id")
+    end
+
+    it 'accepts an options block on a field nested inside a non-array field' do
+      parent = IPaaS::Connector::Schema::Field.new(id: :group, label: 'Group', type: :nested)
+                                              .tap { |field| field.fields = [child_with_options] }
+      parent.valid?
+
+      expect(parent.errors[:fields].join).not_to include(array_nesting_error)
+    end
+  end
+
+  describe 'options_for' do
+    before(:each) do
+      skip_function_capture_validation
+    end
+
+    # call_function opens with valid?, which clears errors on a field shared by every concurrent
+    # request for its solution. options_for must run the block without that pass.
+    it 'runs the block and leaves an error another request planted in place' do
+      field.options { ['ran'] }
+      field.errors.add(:base, 'PLANTED BY ANOTHER REQUEST')
+
+      expect(field.options_for(Object.new)).to eq(['ran'])
+      expect(field.errors[:base]).to eq(['PLANTED BY ANOTHER REQUEST'])
+    end
+
+    it 'passes the declared keywords through to the block' do
+      field.options { |space_id:, folder_id: nil| [space_id, folder_id] }
+
+      expect(field.options_for(Object.new, space_id: '5')).to eq(['5', nil])
+    end
+
+    it 'answers nil when the field declares no options block' do
+      expect(field.options_for(Object.new)).to be_nil
+    end
+  end
+
+  describe 'options parameter validation' do
+    let(:parameter_error) { 'must declare every dependency as a keyword parameter' }
+
+    # Scoped to the options errors: a block defined in a spec method also trips the proc source
+    # rules, which is unrelated to the parameter kinds under test here.
+    def options_errors(block)
+      field.options(&block)
+      field.valid?
+      field.errors[:options].join(' ')
+    end
+
+    it 'accepts a block that takes no parameters' do
+      expect(options_errors(no_dependencies)).not_to include(parameter_error)
+    end
+
+    it 'accepts a block whose parameters are all keywords' do
+      expect(options_errors(required_and_optional)).not_to include(parameter_error)
+    end
+
+    it 'rejects a positional parameter, which is a keyword missing its colon' do
+      expect(options_errors(positional_dependency))
+        .to include('must declare every dependency as a keyword parameter, so space_id cannot be used.')
+    end
+
+    it 'rejects a keyword catch-all, which names no dependency' do
+      expect(options_errors(keyword_catch_all)).to include('so dependencies cannot be used')
+    end
+
+    it 'rejects a block parameter' do
+      expect(options_errors(block_parameter)).to include('so callback cannot be used')
+    end
+  end
+
   describe 'attributes' do
     it 'should define the id attribute' do
       expect(field.id).to eq(:foo)
@@ -134,9 +335,30 @@ describe IPaaS::Connector::Schema::Field do
     end
 
     it 'should validate the :id length' do
-      field.id = :alongnamethatisoverfourtycharacterslongsothatthevalidationfails
+      max = IPaaS::Connector::Schema::Field::MAX_ID_LENGTH
+      field.id = :"#{'a' * (max + 1)}"
       expect(field).to be_invalid
-      expect(field.errors[:id]).to eq(['is too long (maximum is 40 characters)'])
+      expect(field.errors[:id]).to eq(["is too long (maximum is #{max} characters)"])
+    end
+
+    # The cap is a product decision, so one example pins the number itself. Every other example
+    # reads the constant, which keeps them honest about the wiring but blind to its value.
+    it 'should cap an :id at 64 characters' do
+      expect(described_class::MAX_ID_LENGTH).to eq(64)
+    end
+
+    # The Jamf key the cap was raised for. Deriving the id from the key rather than from a literal
+    # keeps the key, the transform and the length pinned together.
+    it 'should accept the :id a real API key snake_cases to' do
+      field.id = 'locationServicesForSelfServiceMobileEnabled'.underscore.to_sym
+
+      expect(field.id.to_s.length).to eq(49)
+      expect(field).to be_valid, -> { field.full_error_messages }
+    end
+
+    it 'should accept an :id at exactly the maximum length' do
+      field.id = :"#{'a' * IPaaS::Connector::Schema::Field::MAX_ID_LENGTH}"
+      expect(field).to be_valid, -> { field.full_error_messages }
     end
 
     it 'should validate the :label length' do

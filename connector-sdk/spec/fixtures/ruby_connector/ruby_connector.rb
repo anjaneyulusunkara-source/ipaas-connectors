@@ -21,7 +21,12 @@ class RubyConnector < IPaaS::Connector::Definition
       ### Evaluate Ruby Code
       Runs a Ruby script with caller-defined input and output schemas. Values assigned to `output[:field]` inside the script are returned under `results`.
 
-      **Use case**: reshape data between actions, derive computed fields, validate an invariant and fail the job on breach, format timestamps or sizes, or decrypt secret inputs before passing them to a later step.
+      #### Common Use Cases
+      - **Reshape action output**: map `action_output('list_devices')` into a slimmer array of hashes before handing it to the next step.
+      - **Custom validation**: assert an invariant on upstream data (`fail_job!('no users found')`) so the runbook stops before a destructive action.
+      - **Derived fields**: select the parts of an action's output that several downstream actions reuse, computing the selection once instead of repeating it in every step, or normalise a timestamp (`1.hour.ago.iso8601`) before handing it on.
+      - **Secret handling**: call `decrypt_secret_string(input[:token])`, use the plain value in a computed header, and surface the result as a `secret_string` via `make_secret_string(...)`.
+      - **Human-readable formatting**: `number_to_human_size(bytes)` or `strftime('%Y-%m-%d')` for values rendered in Xurrent records.
 
       #### Input Parameters
 
@@ -76,30 +81,24 @@ class RubyConnector < IPaaS::Connector::Definition
       | Numbers | `+`, `-`, `*`, `/`, `%`, `**`, `to_s`, `to_i`, `to_f`, `abs`, `ceil`, `times`, durations (`seconds`, `minutes`, `hours`, `days`, `weeks`, `fortnights`), byte helpers (`bytes`, `kilobytes`, `megabytes`, `gigabytes`, `terabytes`, …), `number_to_human_size` |
       | Hashes | `[]`, `[]=`, `dig`, `drill`, `fetch`, `key?`, `delete`, `except`, `slice`, `merge`, `reduce`, `keys`, `values`, `each_value`, `transform_keys`, `transform_values`, `with_indifferent_access`, `deep_dup`, `to_a` |
       | Arrays | `[]`, `<<`, `push`, `length`, `size`, `first`, `last`, `include?`, `exclude?`, `each`, `each_with_index`, `each_with_object`, `each_slice`, `map`, `flat_map`, `filter`, `filter_map`, `select`, `reject`, `detect`, `reduce`, `sum`, `min`, `max`, `sort`, `sort_by`, `group_by`, `index_by`, `pluck`, `pick`, `uniq`, `compact`, `compact_blank`, `flatten`, `zip`, `take`, `to_h`, `to_set`, `any?`, `all?`, `none?` |
-      | Time | `Time.now`, `Time.current`, `utc`, `to_datetime`, `iso8601`, `zone`, `ago`, `at` |
-      | Base64 | `encode64`, `strict_encode64`, `urlsafe_encode64`, `decode64`, `strict_decode64`, `urlsafe_decode64` |
-      | URI | `scheme`, `host`, `request_uri`, `query`, `encode_www_form`, `parse_query`, `url` |
-      | Crypto | `hexdigest`, `secure_compare` |
+      | Time | `Time.now`, `Time.current`, `Time.parse`, `utc`, `to_datetime`, `iso8601`, `zone`, `ago`, `at` |
       | XML | `text`, `at_xpath` |
 
       Calling anything outside the allowlist (including `eval`, `system`, `exec`, `require`, `instance_eval`, method / constant definitions, direct instance / class / global variables) is rejected at validation time with `Method '<name>' not allowed.`.
 
       #### Available iPaaS helpers
-      In addition to the allowed Ruby methods, every helper registered via `proc_safe` is callable from the script. The groups below are grouped by intended audience. The first four are what most runbook authors will ever need; the rest are primarily for connector-authoring contexts and pass validation here without being idiomatic.
+      In addition to the allowed Ruby methods, the platform provides the helpers below.
 
       **Runbook-native (common)**
 
       | Helper | Purpose |
       |---|---|
       | `log(message)` | Emit a log line on the runbook run |
-      | `fail_job!(message)` | Fail the action with a user-facing error. Prefer this over `raise` |
-      | `finish_job!` | Exit the action successfully before the end of the script |
-      | `backoff` | Signal the runbook runner to back off |
-      | `input`, `nested`, `iteration_state`, `iteration_state_value`, `iteration_state_value=` | Access the inputs and iteration state of the surrounding action |
-      | `action_output(ref)` | Read the output of another action in the same runbook. Validated against existing references at save time |
-      | `trigger_output` | Read the runbook's trigger output |
-      | `read_variable(name)`, `write_variable(name, value)` | Read / write a runbook variable |
-      | `account_id`, `runbook` | Identifiers for the current run |
+      | `fail_job!(message)` | Fail the action with a custom message. Prefer this over `raise` |
+      | `finish_job!(message)` | Early exit: complete the job before the end of the runbook, skipping subsequent actions |
+      | `backoff(message, retry_after:)` | Signal the runbook runner to wait before continuing |
+      | `input` | The values mapped into this action's `input` field, with indifferent access |
+      | `job_context_identifier`, `job_context_identifier=` | Read / set the run's identifier, facilitates filtering of jobs |
 
       **Secrets**
 
@@ -107,20 +106,6 @@ class RubyConnector < IPaaS::Connector::Definition
       |---|---|
       | `decrypt_secret_string(value)` | Decrypt a `secret_string` input into a plain string |
       | `make_secret_string(value)`, `new_secret_string(value)` | Wrap a plain value as a secret. Use when writing a `secret_string` output |
-
-      **Cache & store**
-
-      | Helper | Purpose |
-      |---|---|
-      | `cache_read(key)`, `cache_write(key, value)`, `cache_clear(key)` | Connector-scoped cache |
-      | `store(key)`, `read(key)`, `write(key, value)` | Persistent store |
-      | `blueprint_store` | Blueprint-scoped store |
-
-      **Environment**
-
-      | Helper | Purpose |
-      |---|---|
-      | `environment_variable(name)` | Read a named environment variable |
 
       **Data & name helpers**
 
@@ -131,29 +116,34 @@ class RubyConnector < IPaaS::Connector::Definition
       | `humanize_field_name(string)` | Humanise a schema field name |
       | `keys_to_field_id(hash)` | Convert keys to field-id form |
       | `detect_content_type` | Detect a response's content type |
-      | `parse_json_response(response)`, `parse_xml_response(response)` | Parse HTTP responses into hashes |
+      | `parse_json_response(body)` | Parse a JSON response body into a hash or array. Fails the job when the body is not valid JSON |
+      | `parse_xml_response(body)` | Parse an XML response body into a document with namespaces removed. Read values out of it with `at_xpath` and `text` |
 
-      **JWT**
+      #### Advanced helpers
+
+      **Available but prefer alternatives**
+
+      Reading or updating runbook state from inside the script is possible, but hides dependencies.
+      Prefer mapping values so the wiring is visible in the runbook.
 
       | Helper | Purpose |
       |---|---|
+      | `trigger_output` | Read the runbook's trigger output. Prefer an explicit input field |
+      | `action_output(ref)` | Read the output of another action in the same runbook, validated against existing references at save time. Prefer an explicit input field |
+      | `read_variable(name)` | Read a runbook variable. Prefer an explicit input field |
+      | `write_variable(name, value)` | Write a runbook variable. Prefer the 'Assign Runbook Variable' action |
+
+      **Primarily for connector authoring, available but not idiomatic here**
+
+      | Helper | Purpose |
+      |---|---|
+      | `http_send(method, url, **options)` | Outbound HTTP request |
+      | `outbound_connection.store.read(key)`, `outbound_connection.store.write(key, value)` | Persistent store shared by every Ruby action step wired to the same Ruby connection |
       | `encode_jwt(payload, …)`, `decode_jwt!(token, …)` | JWT encode / decode |
       | `make_jwt_payload(…)` | Build a JWT payload |
       | `pem_valid?(pem)` | Check PEM validity |
-
-      **Advanced (primarily for connector authoring, available but not idiomatic here)**
-
-      | Helper | Purpose |
-      |---|---|
-      | `http_send(method, url, **options)`, `http_connection`, plus method shortcuts (`get`, `post`, `put`, `delete`, `head`, `patch`, `options`, `trace`, and their `http_`-prefixed aliases), `multipart_post`, `create_text_part`, `create_binary_part` | Outbound HTTP |
-      | `raw_param_value(value)` | Marks a query-parameter value as already percent-encoded so it is not escaped again, for values lifted out of a signed URL. The value is rejected if it contains a bare `&` or `;`, a tab, carriage return or newline, or a `%` not followed by two hex digits. Only top-level values carry the marker: one nested inside a hash parameter is escaped as usual, and a hash or array grouped with a marked value is refused. A connection that sets its own `params_encoder` keeps it and forfeits raw pass-through. |
-      | `oauth2_client_credentials_body(…)`, `oauth2_refresh_body(…)`, `oauth2_authorization_header(…)`, `clear_oauth2_header_cache` | OAuth2 request bodies and header caching |
-      | `aws_credentials_for_role`, `aws_account_id`, `build_aws_signed_headers`, `call_aws` | AWS SigV4 signing |
-      | `basic_auth_credentials` | Basic auth credential lookup |
-      | `psa_validate_secret`, `psa_extract_basic_auth`, `psa_generate_secret_for`, `psa_secret_for`, `psa_delete_secret_for` | PSA auth helpers |
-      | `update_schedule`, `create_schedule!`, `soft_delete_schedule` | Scheduler helpers |
-      | `gql_find_type`, `gql_find_root_field`, `gql_unwrap_type`, `gql_resolve_return_type_name`, `gql_resolve_connection_node_type`, `gql_collect_fields`, `gql_build_field_selection`, `gql_type_ref_string`, `gql_add_dynamic_fields`, `gql_add_dynamic_input_fields`, `gql_build_order_subfields`, `gql_update_include_fields_input`, `gql_list_root_fields`, `gql_required_args?`, `gql_to_ipaas_type`, `gql_find_nodes_field`, `gql_skip_field?`, `gql_mutation_input_type_name` | GraphQL schema / query helpers |
-      | `ruby_eval(code, params)` | Recursive Ruby evaluation |
+      | `runbook` | The running runbook. Exposes `runbook.uuid`, `runbook.account_id` and `runbook.read_variable(name)` |
+      | `account_id` | Xurrent account the run belongs to |
 
       #### Error Handling
       Errors surface at three points:
@@ -164,40 +154,27 @@ class RubyConnector < IPaaS::Connector::Definition
       | Script validation (before execution) | `action_output('<ref>')` references a step that doesn't exist | `(proc) invalid action references: '<ref>', …` |
       | Input validation (before execution) | `input` values don't match `input_schema` types / required flags | `Nested field 'input' invalid: Type of field '<x>' invalid, expected <T> found <U>.` |
       | Runtime | Any uncaught exception raised inside the script | The exception class and message propagate |
-      | Runtime | Intentional failure | Call `fail_job!('<reason>')`. Produces a clean user-facing error |
+      | Runtime | Intentional failure | Call `fail_job!('<reason>')`. Produces a clean error carrying that message |
       | Output validation (after execution) | `results` don't match `output_schema` types / required flags | `Output [] invalid: Nested field 'results' invalid: …` |
 
       #### Best Practices
+      - Use the Ruby connector for glue logic only. Reshape data, validate invariants, compute derived fields. Anything that calls an external API belongs in a dedicated connector.
+      - Declare `input_schema` and `output_schema` up front. The surrounding runbook editor uses them to validate wiring, and the runtime uses them to type-check at the boundaries.
       - Return data through `output[:field] = value`. The script's return value is discarded.
       - Access inputs via `input[:key]` or `input['key']`. The hash is `with_indifferent_access`.
-      - Call `decrypt_secret_string(input[:x])` for any `secret_string` input; wrap outgoing secret values with `make_secret_string(value)` when the `output_schema` declares a `secret_string` field.
-      - Use `fail_job!('reason')` for unrecoverable conditions instead of raising a raw exception.
-      - If the validator rejects a method, pick an allowed alternative from the lists above. Never try to bypass the allowlist (any workaround involving `send`, `eval`, or constant lookup will be rejected).
+      - Protect secrets: call `decrypt_secret_string(input[:x])` only as late as needed and never `log(...)` a decrypted value; wrap outgoing secret values with `make_secret_string(value)` when the `output_schema` declares a `secret_string` field.
+      - Prefer `fail_job!('reason')` over `raise` for unrecoverable conditions. It produces a clean error on the job without a Ruby stack trace.
+      - When the script needs to pause, call `backoff` and let the runbook runner reschedule the action. `sleep` is not allowed.
+      - If the validator rejects a method, pick an allowed alternative from the lists above.
       - Keep scripts small. For logic that repeats across runbooks, add a dedicated connector action instead of pasting a large script into each runbook.
 
       ## Execution Limits
-      The Ruby connector imposes no timeout or memory cap of its own. Long-running scripts are subject to the surrounding job runner's limits.
-
-      ## Best Practices
-      - Use the Ruby connector for glue logic only. Reshape data, validate invariants, compute derived fields. Anything that calls an external API belongs in a dedicated connector.
-      - Declare `input_schema` and `output_schema` up front. The surrounding runbook editor uses them to validate wiring, and the runtime uses them to type-check at the boundaries.
-      - Treat the allowlist as the contract. If a method you want isn't allowed, the idiomatic path is to either rephrase the expression or add a dedicated action in a purpose-built connector.
-      - Prefer `fail_job!('reason')` over `raise`. It produces a clean error on the runbook run without a Ruby stack trace leaking to the operator.
-      - Protect secret inputs: decrypt with `decrypt_secret_string` only as late as needed, and never `log(...)` a decrypted value.
-
-      ## Common Use Cases
-      - **Reshape action output**: map `action_output('list_devices')` into a slimmer array of hashes before handing it to the next step.
-      - **Custom validation**: assert an invariant on upstream data (`fail_job!('no users found')`) so the runbook stops before a destructive action.
-      - **Derived fields**: compute a hash (`hexdigest`), build a query string (`URI.encode_www_form`), or normalise a timestamp (`1.hour.ago.iso8601`) for downstream actions.
-      - **Secret handling**: call `decrypt_secret_string(input[:token])`, use the plain value in a computed header, and surface the result as a `secret_string` via `make_secret_string(...)`.
-      - **Human-readable formatting**: `number_to_human_size(bytes)` or `strftime('%Y-%m-%d')` for values rendered in Xurrent records.
+      Long-running scripts are subject to the surrounding job runner's limits. This means a Ruby action must complete within 90 seconds.
 
       ## References
       - [Ruby 3.4 standard library](https://docs.ruby-lang.org/en/3.4/)
       - [ActiveSupport 8.1 core extensions](https://guides.rubyonrails.org/v8.1/active_support_core_extensions.html)
-      - [Base64](https://docs.ruby-lang.org/en/3.4/Base64.html)
       - [Time](https://docs.ruby-lang.org/en/3.4/Time.html)
-      - [URI](https://docs.ruby-lang.org/en/3.4/URI.html)
     END_OF_DESCRIPTION
 
     action 'da0f63d9-5281-4919-8613-3ec5554505ab' do
@@ -206,7 +183,12 @@ class RubyConnector < IPaaS::Connector::Definition
       description <<~END_OF_DESCRIPTION
         Runs a Ruby script with caller-defined input and output schemas. Values assigned to `output[:field]` inside the script are returned under `results`. The script is validated against an allowlist of methods before execution. This action does **not** execute arbitrary Ruby.
 
-        **Use case**: reshape data between actions, derive computed fields, validate an invariant and fail the job on breach, format timestamps or sizes, or decrypt secret inputs before passing them to a later step.
+        ### Common Use Cases
+        - **Reshape action output**: map `action_output('list_devices')` into a slimmer array of hashes before handing it to the next step.
+        - **Custom validation**: assert an invariant on upstream data (`fail_job!('no users found')`) so the runbook stops before a destructive action.
+        - **Derived fields**: select the parts of an action's output that several downstream actions reuse, computing the selection once instead of repeating it in every step, or normalise a timestamp (`1.hour.ago.iso8601`) before handing it on.
+        - **Secret handling**: call `decrypt_secret_string(input[:token])`, use the plain value in a computed header, and surface the result as a `secret_string` via `make_secret_string(...)`.
+        - **Human-readable formatting**: `number_to_human_size(bytes)` or `strftime('%Y-%m-%d')` for values rendered in Xurrent records.
 
         ### Input Parameters
 
@@ -261,30 +243,24 @@ class RubyConnector < IPaaS::Connector::Definition
         | Numbers | `+`, `-`, `*`, `/`, `%`, `**`, `to_s`, `to_i`, `to_f`, `abs`, `ceil`, `times`, durations (`seconds`, `minutes`, `hours`, `days`, `weeks`, `fortnights`), byte helpers (`bytes`, `kilobytes`, `megabytes`, `gigabytes`, `terabytes`, …), `number_to_human_size` |
         | Hashes | `[]`, `[]=`, `dig`, `drill`, `fetch`, `key?`, `delete`, `except`, `slice`, `merge`, `reduce`, `keys`, `values`, `each_value`, `transform_keys`, `transform_values`, `with_indifferent_access`, `deep_dup`, `to_a` |
         | Arrays | `[]`, `<<`, `push`, `length`, `size`, `first`, `last`, `include?`, `exclude?`, `each`, `each_with_index`, `each_with_object`, `each_slice`, `map`, `flat_map`, `filter`, `filter_map`, `select`, `reject`, `detect`, `reduce`, `sum`, `min`, `max`, `sort`, `sort_by`, `group_by`, `index_by`, `pluck`, `pick`, `uniq`, `compact`, `compact_blank`, `flatten`, `zip`, `take`, `to_h`, `to_set`, `any?`, `all?`, `none?` |
-        | Time | `Time.now`, `Time.current`, `utc`, `to_datetime`, `iso8601`, `zone`, `ago`, `at` |
-        | Base64 | `encode64`, `strict_encode64`, `urlsafe_encode64`, `decode64`, `strict_decode64`, `urlsafe_decode64` |
-        | URI | `scheme`, `host`, `request_uri`, `query`, `encode_www_form`, `parse_query`, `url` |
-        | Crypto | `hexdigest`, `secure_compare` |
+        | Time | `Time.now`, `Time.current`, `Time.parse`, `utc`, `to_datetime`, `iso8601`, `zone`, `ago`, `at` |
         | XML | `text`, `at_xpath` |
 
         Calling anything outside the allowlist (including `eval`, `system`, `exec`, `require`, `instance_eval`, method / constant definitions, direct instance / class / global variables) is rejected at validation time with `Method '<name>' not allowed.`.
 
         ### Available iPaaS helpers
-        In addition to the allowed Ruby methods, every helper registered via `proc_safe` is callable from the script. The groups below are grouped by intended audience. The first four are what most runbook authors will ever need; the rest are primarily for connector-authoring contexts and pass validation here without being idiomatic.
+        In addition to the allowed Ruby methods, the platform provides the helpers below.
 
         **Runbook-native (common)**
 
         | Helper | Purpose |
         |---|---|
         | `log(message)` | Emit a log line on the runbook run |
-        | `fail_job!(message)` | Fail the action with a user-facing error. Prefer this over `raise` |
-        | `finish_job!` | Exit the action successfully before the end of the script |
-        | `backoff` | Signal the runbook runner to back off |
-        | `input`, `nested`, `iteration_state`, `iteration_state_value`, `iteration_state_value=` | Access the inputs and iteration state of the surrounding action |
-        | `action_output(ref)` | Read the output of another action in the same runbook. Validated against existing references at save time |
-        | `trigger_output` | Read the runbook's trigger output |
-        | `read_variable(name)`, `write_variable(name, value)` | Read / write a runbook variable |
-        | `account_id`, `runbook` | Identifiers for the current run |
+        | `fail_job!(message)` | Fail the action with a custom message. Prefer this over `raise` |
+        | `finish_job!(message)` | Early exit: complete the job before the end of the runbook, skipping subsequent actions |
+        | `backoff(message, retry_after:)` | Signal the runbook runner to wait before continuing |
+        | `input` | The values mapped into this action's `input` field, with indifferent access |
+        | `job_context_identifier`, `job_context_identifier=` | Read / set the run's identifier, facilitates filtering of jobs |
 
         **Secrets**
 
@@ -292,20 +268,6 @@ class RubyConnector < IPaaS::Connector::Definition
         |---|---|
         | `decrypt_secret_string(value)` | Decrypt a `secret_string` input into a plain string |
         | `make_secret_string(value)`, `new_secret_string(value)` | Wrap a plain value as a secret. Use when writing a `secret_string` output |
-
-        **Cache & store**
-
-        | Helper | Purpose |
-        |---|---|
-        | `cache_read(key)`, `cache_write(key, value)`, `cache_clear(key)` | Connector-scoped cache |
-        | `store(key)`, `read(key)`, `write(key, value)` | Persistent store |
-        | `blueprint_store` | Blueprint-scoped store |
-
-        **Environment**
-
-        | Helper | Purpose |
-        |---|---|
-        | `environment_variable(name)` | Read a named environment variable |
 
         **Data & name helpers**
 
@@ -316,29 +278,34 @@ class RubyConnector < IPaaS::Connector::Definition
         | `humanize_field_name(string)` | Humanise a schema field name |
         | `keys_to_field_id(hash)` | Convert keys to field-id form |
         | `detect_content_type` | Detect a response's content type |
-        | `parse_json_response(response)`, `parse_xml_response(response)` | Parse HTTP responses into hashes |
+        | `parse_json_response(body)` | Parse a JSON response body into a hash or array. Fails the job when the body is not valid JSON |
+        | `parse_xml_response(body)` | Parse an XML response body into a document with namespaces removed. Read values out of it with `at_xpath` and `text` |
 
-        **JWT**
+        ### Advanced helpers
+
+        **Available but prefer alternatives**
+
+        Reading or updating runbook state from inside the script is possible, but hides dependencies.
+        Prefer mapping values so the wiring is visible in the runbook.
 
         | Helper | Purpose |
         |---|---|
+        | `trigger_output` | Read the runbook's trigger output. Prefer an explicit input field |
+        | `action_output(ref)` | Read the output of another action in the same runbook, validated against existing references at save time. Prefer an explicit input field |
+        | `read_variable(name)` | Read a runbook variable. Prefer an explicit input field |
+        | `write_variable(name, value)` | Write a runbook variable. Prefer the 'Assign Runbook Variable' action |
+
+        **Primarily for connector authoring, available but not idiomatic here**
+
+        | Helper | Purpose |
+        |---|---|
+        | `http_send(method, url, **options)` | Outbound HTTP request |
+        | `outbound_connection.store.read(key)`, `outbound_connection.store.write(key, value)` | Persistent store shared by every Ruby action step wired to the same Ruby connection |
         | `encode_jwt(payload, …)`, `decode_jwt!(token, …)` | JWT encode / decode |
         | `make_jwt_payload(…)` | Build a JWT payload |
         | `pem_valid?(pem)` | Check PEM validity |
-
-        **Advanced (primarily for connector authoring, available but not idiomatic here)**
-
-        | Helper | Purpose |
-        |---|---|
-        | `http_send(method, url, **options)`, `http_connection`, plus method shortcuts (`get`, `post`, `put`, `delete`, `head`, `patch`, `options`, `trace`, and their `http_`-prefixed aliases), `multipart_post`, `create_text_part`, `create_binary_part` | Outbound HTTP |
-        | `raw_param_value(value)` | Marks a query-parameter value as already percent-encoded so it is not escaped again, for values lifted out of a signed URL. The value is rejected if it contains a bare `&` or `;`, a tab, carriage return or newline, or a `%` not followed by two hex digits. Only top-level values carry the marker: one nested inside a hash parameter is escaped as usual, and a hash or array grouped with a marked value is refused. A connection that sets its own `params_encoder` keeps it and forfeits raw pass-through. |
-        | `oauth2_client_credentials_body(…)`, `oauth2_refresh_body(…)`, `oauth2_authorization_header(…)`, `clear_oauth2_header_cache` | OAuth2 request bodies and header caching |
-        | `aws_credentials_for_role`, `aws_account_id`, `build_aws_signed_headers`, `call_aws` | AWS SigV4 signing |
-        | `basic_auth_credentials` | Basic auth credential lookup |
-        | `psa_validate_secret`, `psa_extract_basic_auth`, `psa_generate_secret_for`, `psa_secret_for`, `psa_delete_secret_for` | PSA auth helpers |
-        | `update_schedule`, `create_schedule!`, `soft_delete_schedule` | Scheduler helpers |
-        | `gql_find_type`, `gql_find_root_field`, `gql_unwrap_type`, `gql_resolve_return_type_name`, `gql_resolve_connection_node_type`, `gql_collect_fields`, `gql_build_field_selection`, `gql_type_ref_string`, `gql_add_dynamic_fields`, `gql_add_dynamic_input_fields`, `gql_build_order_subfields`, `gql_update_include_fields_input`, `gql_list_root_fields`, `gql_required_args?`, `gql_to_ipaas_type`, `gql_find_nodes_field`, `gql_skip_field?`, `gql_mutation_input_type_name` | GraphQL schema / query helpers |
-        | `ruby_eval(code, params)` | Recursive Ruby evaluation |
+        | `runbook` | The running runbook. Exposes `runbook.uuid`, `runbook.account_id` and `runbook.read_variable(name)` |
+        | `account_id` | Xurrent account the run belongs to |
 
         ### Error Handling
         Errors surface at three points:
@@ -349,15 +316,18 @@ class RubyConnector < IPaaS::Connector::Definition
         | Script validation (before execution) | `action_output('<ref>')` references a step that doesn't exist | `(proc) invalid action references: '<ref>', …` |
         | Input validation (before execution) | `input` values don't match `input_schema` types / required flags | `Nested field 'input' invalid: Type of field '<x>' invalid, expected <T> found <U>.` |
         | Runtime | Any uncaught exception raised inside the script | The exception class and message propagate |
-        | Runtime | Intentional failure | Call `fail_job!('<reason>')`. Produces a clean user-facing error |
+        | Runtime | Intentional failure | Call `fail_job!('<reason>')`. Produces a clean error carrying that message |
         | Output validation (after execution) | `results` don't match `output_schema` types / required flags | `Output [] invalid: Nested field 'results' invalid: …` |
 
         ### Best Practices
+        - Use the Ruby connector for glue logic only. Reshape data, validate invariants, compute derived fields. Anything that calls an external API belongs in a dedicated connector.
+        - Declare `input_schema` and `output_schema` up front. The surrounding runbook editor uses them to validate wiring, and the runtime uses them to type-check at the boundaries.
         - Return data through `output[:field] = value`. The script's return value is discarded.
         - Access inputs via `input[:key]` or `input['key']`. The hash is `with_indifferent_access`.
-        - Call `decrypt_secret_string(input[:x])` for any `secret_string` input; wrap outgoing secret values with `make_secret_string(value)` when the `output_schema` declares a `secret_string` field.
-        - Use `fail_job!('reason')` for unrecoverable conditions instead of raising a raw exception.
-        - If the validator rejects a method, pick an allowed alternative from the lists above. Never try to bypass the allowlist (any workaround involving `send`, `eval`, or constant lookup will be rejected).
+        - Protect secrets: call `decrypt_secret_string(input[:x])` only as late as needed and never `log(...)` a decrypted value; wrap outgoing secret values with `make_secret_string(value)` when the `output_schema` declares a `secret_string` field.
+        - Prefer `fail_job!('reason')` over `raise` for unrecoverable conditions. It produces a clean error on the job without a Ruby stack trace.
+        - When the script needs to pause, call `backoff` and let the runbook runner reschedule the action. `sleep` is not allowed.
+        - If the validator rejects a method, pick an allowed alternative from the lists above.
         - Keep scripts small. For logic that repeats across runbooks, add a dedicated connector action instead of pasting a large script into each runbook.
       END_OF_DESCRIPTION
 

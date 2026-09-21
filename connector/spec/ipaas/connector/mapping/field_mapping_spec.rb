@@ -1,6 +1,8 @@
 require 'spec_helper'
 
 describe IPaaS::Connector::Mapping::FieldMapping do
+  before(:each) { IPaaS::Connector::Common::ProcHelper.validated_before.clear }
+
   describe 'parse' do
     context 'single field' do
       let(:field) do
@@ -137,6 +139,19 @@ describe IPaaS::Connector::Mapping::FieldMapping do
       expect(field_mapping.nested.last.field_id).to eq(:bar)
       expect(field_mapping.nested.last.fixed).to eq('Cheers World!')
       expect(field_mapping.to_h_ref.with_indifferent_access).to eq(hash.with_indifferent_access)
+    end
+
+    it 'should report a proc that exhausts the stack as an ordinary invalid proc' do
+      # Injected rather than performed: overflowing for real costs a deep stack and the memory to
+      # unwind it. What matters here is that the message reaches the field either way.
+      allow_any_instance_of(IPaaS::Connector::Common::ProcHelper)
+        .to receive(:parse_ast).and_raise(SystemStackError)
+
+      hash = { field_id: :foo, proc: '1 + 1' }
+      field_mapping = IPaaS::Connector::Mapping::FieldMapping.parse(hash)
+      expect(field_mapping).not_to be_valid
+      expect(field_mapping.full_error_messages)
+        .to include(IPaaS::Connector::Common::ProcHelper::TOO_COMPLEX_MESSAGE)
     end
 
     it 'should validate nested field procs' do

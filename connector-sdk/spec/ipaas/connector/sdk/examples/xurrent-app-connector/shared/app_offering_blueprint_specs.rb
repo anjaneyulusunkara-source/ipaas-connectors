@@ -8,6 +8,12 @@ module AppOfferingBlueprintSpecs
           stub_xurrent_oauth2_token(outbound_connection_config)
         end
 
+        # `helpers` hands procs a proxy that dispatches registered names only, so it cannot be
+        # stubbed. Dispatch calls `ProcHelper#execute`, which receives the helper's own arguments.
+        def helper_proc(name)
+          trigger.trigger_template.helpers_definition.registered_helper(name)
+        end
+
         let(:endpoint) do
           outbound_connection_config[:environment][:graphql_endpoint]
         end
@@ -776,8 +782,8 @@ module AppOfferingBlueprintSpecs
 
         context 'extract' do
           before(:each) do
-            allow(trigger.helpers).to receive(:extract_inline_images).and_return(nil)
-            allow(trigger.helpers).to receive(:upload_inline_images).and_return(nil)
+            allow(helper_proc(:extract_inline_images)).to receive(:execute).and_return(nil)
+            allow(helper_proc(:upload_inline_images)).to receive(:execute).and_return(nil)
           end
 
           it 'should extract the app offering json' do
@@ -850,11 +856,11 @@ module AppOfferingBlueprintSpecs
             stub_request(:get, 'https://example.com/desc_image.png')
               .to_return(body: 'fake_image_data_2', status: 200)
 
-            allow(trigger.helpers).to receive(:extract_inline_images).and_call_original
+            allow(helper_proc(:extract_inline_images)).to receive(:execute).and_call_original
 
             trigger.extract_blueprint
 
-            expect(trigger.helpers).to have_received(:extract_inline_images).with(an_instance_of(Hash))
+            expect(helper_proc(:extract_inline_images)).to have_received(:execute).with(an_instance_of(Hash))
           end
         end
 
@@ -864,8 +870,8 @@ module AppOfferingBlueprintSpecs
             trigger.blueprint_store.write('app_offering_ui_extension.json', yoda_ui_extension_blueprint)
             trigger.blueprint_store.write('app_offering_automation_rules.json', yoda_automation_rules_blueprint)
 
-            allow(trigger.helpers).to receive(:extract_inline_images).and_return(nil)
-            allow(trigger.helpers).to receive(:upload_inline_images).and_return(nil)
+            allow(helper_proc(:extract_inline_images)).to receive(:execute).and_return(nil)
+            allow(helper_proc(:upload_inline_images)).to receive(:execute).and_return(nil)
           end
 
           it 'should handle a service instance not found' do
@@ -1050,7 +1056,7 @@ module AppOfferingBlueprintSpecs
                 appOffering: { id: 'app-offering-id', reference: 'yoda' }, errors: [],
               } } }.to_json)
 
-            allow(trigger.helpers).to receive(:upload_inline_images).and_call_original
+            allow(helper_proc(:upload_inline_images)).to receive(:execute).and_call_original
 
             find_no_app_offering_stub
             find_no_ui_extension_by_source_stub
@@ -1063,7 +1069,7 @@ module AppOfferingBlueprintSpecs
             expect(find_no_app_offering_stub).to have_been_requested.once
             expect(create_app_offering_stub).to have_been_requested
 
-            expect(trigger.helpers).to have_received(:upload_inline_images).with(an_instance_of(Hash))
+            expect(helper_proc(:upload_inline_images)).to have_received(:execute).with(an_instance_of(Hash))
           end
         end
 
@@ -1076,8 +1082,8 @@ module AppOfferingBlueprintSpecs
             trigger.blueprint_store.write('app_offering.json', yoda_app_offering_blueprint)
             trigger.blueprint_store.write('app_offering_ui_extension.json', yoda_ui_extension_blueprint)
             trigger.blueprint_store.write('app_offering_automation_rules.json', yoda_automation_rules_blueprint)
-            allow(trigger.helpers).to receive(:extract_inline_images).and_return(nil)
-            allow(trigger.helpers).to receive(:upload_inline_images).and_return(nil)
+            allow(helper_proc(:extract_inline_images)).to receive(:execute).and_return(nil)
+            allow(helper_proc(:upload_inline_images)).to receive(:execute).and_return(nil)
           end
 
           # B6 — find App Offering interpolates the configured app_reference

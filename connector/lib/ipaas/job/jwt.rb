@@ -9,11 +9,11 @@ module IPaaS
                 :assert_no_oidc_redirect!
 
       MAX_JTI_LENGTH = 256
-      MAX_IAT_DRIFT = 1.minute
-      JTI_CACHE_DURATION = 2 * MAX_IAT_DRIFT
+      MAX_IAT_DRIFT = IPaaS.make_shareable(1.minute)
+      JTI_CACHE_DURATION = IPaaS.make_shareable(2 * MAX_IAT_DRIFT)
+      SUPPORTED_ALGORITHMS = IPaaS.make_shareable(%w[RS256 RS384 RS512 ES256 ES384 ES512])
+      ASYMMETRIC_JWK_KTYS = IPaaS.make_shareable(%w[RSA EC])
 
-      SUPPORTED_ALGORITHMS = %w[RS256 RS384 RS512 ES256 ES384 ES512].freeze
-      ASYMMETRIC_JWK_KTYS = %w[RSA EC].freeze
       MAX_TOKEN_BYTES = 8 * 1024
       MAX_OIDC_RESPONSE_BYTES = 64 * 1024
       OIDC_HTTP_OPTS = { open_timeout: 2, timeout: 5 }.freeze
@@ -193,7 +193,7 @@ module IPaaS
           header_alg
         end
 
-        # rubocop:disable Metrics/ParameterLists
+        # rubocop:disable-next Metrics/ParameterLists
         def pre_verify_and_resolve_key(token, algorithm, algorithm_allowlist, pem, key_resolver,
                                        issuer, issuer_prefix, audience)
           unverified_payload, unverified_header = ::JWT.decode(token, nil, false)
@@ -203,7 +203,6 @@ module IPaaS
           resolved_pem = pem.presence || key_resolver&.call(unverified_header, unverified_payload)
           build_decode_input(resolved_pem, effective_algorithm, audience, issuer)
         end
-        # rubocop:enable Metrics/ParameterLists
 
         def build_decode_input(resolved_pem, effective_algorithm, audience, issuer)
           decode_options = {}

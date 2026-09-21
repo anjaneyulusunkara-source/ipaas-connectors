@@ -41,11 +41,11 @@ module IPaaS
         # blame-the-connection branch below.
         TRANSIENT_STATUSES = [408, 429].freeze
 
-        UNCONFIGURED_NOTICE = {
+        UNCONFIGURED_NOTICE = IPaaS.make_shareable({
           notice: 'Outbound Connection is not configured correctly.',
           notice_type: 'error',
           notice_action: 'edit_connection',
-        }.freeze
+        })
 
         class << self
           # A +nil+ connection (unconfigured action) is intentional: reads ⇒ nil, writes/clears ⇒ no-op.

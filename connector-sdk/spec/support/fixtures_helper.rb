@@ -4,7 +4,8 @@ def load_all_fixtures
   load_fixture('*')
 end
 
-# Loads a connector fixture by name. Supports both the folder layout
+# Loads a connector fixture by name, with its constants made deeply immutable.
+# Supports both the folder layout
 # (fixtures/<name>/<name>.rb, where bundled SVGs live alongside the .rb) and the
 # legacy flat layout (fixtures/<name>.rb). When both exist for the same name the
 # folder copy wins.
@@ -12,6 +13,20 @@ end
 # @return [void]
 def load_fixture(filename)
   fixture_entrypoints(filename).each { |f| require f }
+  fixture_classes(filename).each { |klass| IPaaS::Connector::Definition.make_constants_shareable(klass) }
+end
+
+# The connector classes the entrypoints for +filename+ define. Selected by source file: a subclass
+# another spec built is never touched, and a fixture required by another route is still reached.
+# @param filename [String] fixture name or glob, e.g. 'debug_connector' or '*'
+# @return [Array<Class>] the connector definition classes those files define
+def fixture_classes(filename = '*')
+  paths = fixture_entrypoints(filename).to_set
+  IPaaS::Connector::Definition.subclasses.select do |klass|
+    klass.name && paths.include?(Object.const_source_location(klass.name)&.first)
+  rescue NameError # a class defined in an anonymous module has no resolvable name
+    false
+  end
 end
 
 # Resolves connector fixture entrypoint paths for +filename+ across both layouts,

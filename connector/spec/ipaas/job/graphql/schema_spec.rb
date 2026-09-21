@@ -194,17 +194,24 @@ describe IPaaS::Job::GraphQL::Schema do # -- mirrors GraphQL naming conventions
       expect(described_class.gql_list_root_fields(schema, 'query')).to eq([])
     end
 
-    it 'skips fields with names longer than 40 characters' do
-      long_name = 'a' * 41
-      schema = schema_data.deep_dup
-      query_type = schema['types'].detect { |tp| tp['name'] == 'Query' }
-      query_type['fields'] << {
-        'name' => long_name, 'description' => nil,
-        'type' => t.scalar('String'), 'args' => [],
-      }
-      schema.delete('_type_index')
-      result = described_class.gql_list_root_fields(schema, 'query')
-      expect(result.map { |r| r[:id] }).not_to include(long_name)
+    max_id_length = IPaaS::Connector::Schema::Field::MAX_ID_LENGTH
+
+    {
+      'exactly the maximum field id length' => [max_id_length, true],
+      'one over the maximum field id length' => [max_id_length + 1, false],
+    }.each do |description, (length, listed)|
+      it "#{listed ? 'lists' : 'skips'} a query root field whose name is #{description}" do
+        name = 'a' * length
+        schema = schema_data.deep_dup
+        query_type = schema['types'].detect { |tp| tp['name'] == 'Query' }
+        query_type['fields'] << {
+          'name' => name, 'description' => nil,
+          'type' => t.scalar('String'), 'args' => [],
+        }
+        schema.delete('_type_index')
+        result = described_class.gql_list_root_fields(schema, 'query')
+        expect(result.map { |r| r[:id] }.include?(name)).to eq(listed)
+      end
     end
   end
 
@@ -349,9 +356,23 @@ describe IPaaS::Job::GraphQL::Schema do # -- mirrors GraphQL naming conventions
       expect(described_class.gql_skip_field?(field)).to eq(true)
     end
 
-    it 'skips field with name longer than 40 characters' do
-      f = { 'name' => 'a' * 41, 'args' => [] }
+    it 'skips field with name longer than the maximum field id length' do
+      f = { 'name' => 'a' * (IPaaS::Connector::Schema::Field::MAX_ID_LENGTH + 1), 'args' => [] }
       expect(described_class.gql_skip_field?(f)).to eq(true)
+    end
+
+    it 'does not skip field with name at exactly the maximum field id length' do
+      f = { 'name' => 'a' * IPaaS::Connector::Schema::Field::MAX_ID_LENGTH, 'args' => [] }
+      expect(described_class.gql_skip_field?(f)).to eq(false)
+    end
+
+    # Jamf's locationServicesForSelfServiceMobileEnabled, the key the cap was raised for.
+    it 'does not skip a field name as long as the one a real API key reaches' do
+      length = 'locationServicesForSelfServiceMobileEnabled'.underscore.length
+      f = { 'name' => 'a' * length, 'args' => [] }
+
+      expect(length).to be > 40
+      expect(described_class.gql_skip_field?(f)).to eq(false)
     end
 
     it 'does not skip normal field' do

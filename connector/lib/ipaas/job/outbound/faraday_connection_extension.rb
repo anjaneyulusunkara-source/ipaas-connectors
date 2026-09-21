@@ -2,8 +2,6 @@ module IPaaS
   module Job
     module Outbound
       module FaradayConnectionExtension
-        METHODS = Faraday::Connection::METHODS
-
         extend ActiveSupport::Concern
 
         included do

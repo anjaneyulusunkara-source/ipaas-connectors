@@ -5,13 +5,13 @@ module IPaaS
     module Outbound
       class LoggingMiddleware < Faraday::Middleware
         SENSITIVE_KEY_PATTERN = /token|secret|api[_-]?key|access[_-]?token|password|auth/i
-        REDACTED_HEADERS = %w[
+        REDACTED_HEADERS = IPaaS.make_shareable(%w[
           Authorization
           Proxy-Authorization
           Cookie
           Set-Cookie
           X-Api-Key
-        ].freeze
+        ])
 
         def on_request(env)
           env.request.instance_variable_set(:@ipaas_start, monotonic_now)
@@ -37,7 +37,7 @@ module IPaaS
           nil
         end
 
-        # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
+        # rubocop:disable-next Metrics/AbcSize,Metrics/MethodLength
         def build_payload(env, error)
           started = env.request.instance_variable_get(:@ipaas_start)
           url = env.url
@@ -59,15 +59,9 @@ module IPaaS
           end
           payload.compact
         end
-        # rubocop:enable Metrics/AbcSize,Metrics/MethodLength
 
         def logger
-          @logger ||=
-            if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-              Rails.logger
-            else
-              ::Logger.new($stdout)
-            end
+          IPaaS.default_logger
         end
 
         def redact_headers(headers)

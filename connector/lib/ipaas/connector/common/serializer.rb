@@ -115,6 +115,7 @@ module IPaaS
 
           def load_yaml(value, tolerant)
             content = value.is_a?(File) ? value.read : value
+            YamlLimits.apply!(content)
             YAML.load(content, permitted_classes: ALLOWED_CLASSES)
           rescue Psych::DisallowedClass
             raise unless tolerant

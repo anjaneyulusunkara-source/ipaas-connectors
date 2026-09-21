@@ -107,7 +107,7 @@ module IPaaS
           end
         end
 
-        # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+        # rubocop:disable-next Metrics/AbcSize, Metrics/MethodLength
         def build_signing_context(method:, url:, payload:, credentials:, region:, service:, content_type:, timestamp:)
           uri = URI.parse(url)
           amz_date = timestamp.strftime('%Y%m%dT%H%M%SZ')
@@ -143,7 +143,6 @@ module IPaaS
           { credential_scope: credential_scope, signed_headers: signed_headers, signature: signature,
             amz_date: amz_date, }
         end
-        # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
         def build_canonical_query(uri)
           return '' unless uri.query

@@ -1,5 +1,6 @@
-SimpleCov.start do
+SimpleCov.configure do
   enable_coverage :branch
-  add_filter '/spec/support'
-  add_filter '/spec/ipaas'
+  remove_filter %r{\A(test|features|spec|autotest)/}
+  skip '/spec/support'
+  skip '/spec/ipaas'
 end

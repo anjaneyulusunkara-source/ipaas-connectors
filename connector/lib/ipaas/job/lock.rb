@@ -13,9 +13,8 @@ module IPaaS
 
       proc_safe :with_lock, :release_lock, :write_if_lock_held
 
-      # TTL must remain below the maximum allowed time for a single action (90 s)
-      # so a holder killed by an action timeout cannot orphan a lock past its own
-      # action. Faraday refresh timeout (20 s) gives a 3x safety margin.
+      # TTL must remain below the host's maximum time for a single action, so a holder
+      # killed by an action timeout cannot orphan a lock past its own action.
       DEFAULT_TTL_SECONDS = 60
 
       # When contention or locker outage forces a reschedule, these are the base
@@ -24,9 +23,9 @@ module IPaaS
       # interval to give Redis time to recover before the platform job-retry
       # caps kick in. Random jitter desynchronises waves of contenders that
       # would otherwise reschedule at the same wait_until boundary.
-      RETRY_AFTER_CONTENTION        = 2.seconds
+      RETRY_AFTER_CONTENTION        = IPaaS.make_shareable(2.seconds)
       RETRY_AFTER_CONTENTION_JITTER = 1.0
-      RETRY_AFTER_OUTAGE            = 30.seconds
+      RETRY_AFTER_OUTAGE            = IPaaS.make_shareable(30.seconds)
       RETRY_AFTER_OUTAGE_JITTER     = 5.0
 
       included do

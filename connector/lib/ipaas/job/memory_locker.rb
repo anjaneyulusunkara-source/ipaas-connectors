@@ -4,7 +4,8 @@ module IPaaS
     # and customer connectors that run outside the platform. Single-process only.
     # Production replaces this with a cross process locker.
     class MemoryLocker
-      MUTEX = Monitor.new
+      # A frozen Monitor still locks; it can never be Ractor.shareable?.
+      MUTEX = Monitor.new.freeze
       # Keyed by namespaced(key); each entry is { token:, expires_at: }.
       # Mutable by design; do not freeze.
       ENTRIES = {} # rubocop:disable Style/MutableConstant
@@ -29,7 +30,7 @@ module IPaaS
         nil
       end
 
-      # rubocop:disable Naming/PredicateMethod -- yields a side-effect block; return signals ownership.
+      # rubocop:disable-next Naming/PredicateMethod -- yields a side-effect block; return signals ownership.
       def compare_and_call(key, token)
         full_key = namespaced(key)
         return false unless MUTEX.synchronize { owned?(full_key, token) }
@@ -37,7 +38,6 @@ module IPaaS
         yield
         true
       end
-      # rubocop:enable Naming/PredicateMethod
 
       private
 

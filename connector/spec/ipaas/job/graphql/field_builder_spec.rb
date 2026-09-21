@@ -1,6 +1,8 @@
 require 'spec_helper'
 
 describe IPaaS::Job::GraphQL::FieldBuilder do
+  # Jamf's locationServicesForSelfServiceMobileEnabled, the key the cap was raised for.
+  real_api_key_length = 'locationServicesForSelfServiceMobileEnabled'.underscore.length
   # Mock target that mimics the field() method from SchemaMixin.
   # When called with just an id, returns the stored field.
   # When called with id, label, type, and options, stores a new field.
@@ -120,6 +122,19 @@ describe IPaaS::Job::GraphQL::FieldBuilder do
   end
 
   describe '.gql_add_dynamic_input_fields' do
+    max_id_length = IPaaS::Connector::Schema::Field::MAX_ID_LENGTH
+
+    def schema_with_input_field_named(name)
+      schema_data.deep_dup.tap do |schema|
+        input_type = schema['types'].detect { |type| type['name'] == 'RequestCreateInput' }
+        input_type['inputFields'] << {
+          'name' => name, 'description' => nil, 'defaultValue' => nil,
+          'type' => { 'kind' => 'SCALAR', 'name' => 'String', 'ofType' => nil },
+        }
+        schema.delete('_type_index')
+      end
+    end
+
     it 'adds input fields for a mutation input type' do
       described_class.gql_add_dynamic_input_fields(
         target, schema_data, 'RequestCreateInput', 0,
@@ -246,6 +261,20 @@ describe IPaaS::Job::GraphQL::FieldBuilder do
       expected = [:category, :customFields, :source, :sourceID, :subject]
       expect(ids).to eq(expected)
     end
+
+    {
+      'exactly the maximum field id length' => [max_id_length, true],
+      'the length a real API key reaches' => [real_api_key_length, true],
+      'one over the maximum field id length' => [max_id_length + 1, false],
+    }.each do |description, (length, kept)|
+      it "#{kept ? 'adds' : 'skips'} an input field whose name is #{description}" do
+        name = 'a' * length
+        described_class.gql_add_dynamic_input_fields(
+          target, schema_with_input_field_named(name), 'RequestCreateInput', 0,
+        )
+        expect(target.fields.map(&:id).include?(name.to_sym)).to eq(kept)
+      end
+    end
   end
 
   describe '.gql_build_order_subfields' do
@@ -303,6 +332,49 @@ describe IPaaS::Job::GraphQL::FieldBuilder do
       sub_ids = include_field.fields.map(&:id)
       expect(sub_ids).to eq([:organization])
       expect(include_field.field(:organization).type).to eq(:boolean)
+    end
+
+    # The include toggle names a nested object, and ticking it declares a companion field whose id is
+    # that name plus '_fields'. So the longest name this list may offer is the id cap less that
+    # suffix, not the cap itself.
+    def schema_with_nested_object_named(name)
+      schema_data.deep_dup.tap do |schema|
+        organization = { 'kind' => 'OBJECT', 'name' => 'Organization', 'ofType' => nil }
+        person = schema['types'].detect { |type| type['name'] == 'Person' }
+        person['fields'] << { 'name' => name, 'description' => nil, 'args' => [], 'type' => organization }
+        org_type = schema['types'].detect { |type| type['name'] == 'Organization' }
+        org_type['fields'] << { 'name' => 'parent', 'description' => nil, 'args' => [], 'type' => organization }
+        schema.delete('_type_index')
+      end
+    end
+
+    def include_option_ids(name)
+      described_class.gql_update_include_fields_input(
+        target, schema_with_nested_object_named(name), 'Person', {}, 0,
+      )
+      target.field(:include_fields).fields.map { |field| field.id.to_s }
+    end
+
+    it 'offers a nested field whose companion id still fits' do
+      longest = 'a' * described_class::MAX_INCLUDE_FIELD_NAME_LENGTH
+
+      expect(include_option_ids(longest)).to include(longest)
+    end
+
+    it 'skips a nested field one character longer, whose companion id would not fit' do
+      too_long = 'a' * (described_class::MAX_INCLUDE_FIELD_NAME_LENGTH + 1)
+
+      expect(include_option_ids(too_long)).not_to include(too_long)
+    end
+
+    it 'keeps the longest companion id at the field id limit' do
+      longest = 'a' * described_class::MAX_INCLUDE_FIELD_NAME_LENGTH
+      described_class.gql_update_include_fields_input(
+        target, schema_with_nested_object_named(longest), 'Person', { include_fields: { longest.to_sym => true } }, 0,
+      )
+
+      companion = target.field(:include_fields).field(:"#{longest}_fields")
+      expect(companion.id.to_s.length).to eq(IPaaS::Connector::Schema::Field::MAX_ID_LENGTH)
     end
 
     it 'generates _fields section when boolean is checked' do

@@ -12,7 +12,7 @@ module IPaaS
       #   fields.first.id    # => :name
       #   fields.first.type  # => :string
       class FieldBuilder
-        ACRONYMS = %w[id api url uri aws sqs http ftp ssl ip ipv4 ipv6 md5 cpu io fqdn].freeze
+        ACRONYMS = IPaaS.make_shareable(%w[id api url uri aws sqs http ftp ssl ip ipv4 ipv6 md5 cpu io fqdn])
 
         class << self
           # Converts a JSON key to a snake_case field ID symbol.
@@ -23,7 +23,7 @@ module IPaaS
             key.to_s
                .gsub(/[^a-zA-Z0-9]/, '_')
                .gsub(/\A_+|_+\z/, '')
-               .squeeze('_')[0, 40].to_sym
+               .squeeze('_')[0, Field::MAX_ID_LENGTH].to_sym
           end
 
           # Converts a JSON key to a human-readable label.
@@ -154,7 +154,7 @@ module IPaaS
           n = seen_ids[base_id]
           loop do
             suffix = "_#{n}"
-            candidate = :"#{base_id.to_s[0, 40 - suffix.length]}#{suffix}"
+            candidate = :"#{base_id.to_s[0, Field::MAX_ID_LENGTH - suffix.length]}#{suffix}"
             break attrs[:id] = candidate unless used_ids.include?(candidate)
             n += 1
           end

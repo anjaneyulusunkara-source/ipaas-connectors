@@ -83,7 +83,7 @@ describe 'Microsoft Entra and Intune Connection', :outbound_connection do
         .to_return(status: 401, body: 'No 2nd call expected', headers: {})
     end
 
-    # rubocop:disable Metrics/MethodLength
+    # rubocop:disable-next Metrics/MethodLength
     def update_connection_schema!(*credentials_fields)
       new_config = outbound_connection.config_schema
                                       .resolve(outbound_connection, [
@@ -97,7 +97,6 @@ describe 'Microsoft Entra and Intune Connection', :outbound_connection do
                                       ])
       outbound_connection.instance_variable_set(:@config, new_config)
     end
-    # rubocop:enable Metrics/MethodLength
 
     describe 'tenant ID' do
       it 'defaults oauth URL' do

@@ -202,11 +202,13 @@ describe IPaaS::Connector::TriggerTemplate do
 
     it "has connector's helpers as parent_helpers" do
       load_minimal_fixture
-      @connector.helper(:hello_world) { 'Hello World!' }
-      @connector.helper(:local_hello_world) { 'Hello World!' }
-      @trigger.helper(:local_hello_world) { 'Hallo Wereld!' }
-      expect(@trigger.helpers.hello_world).to eq('Hello World!')
-      expect(@trigger.helpers.local_hello_world).to eq('Hallo Wereld!')
+      connector = @connector
+      trigger = @trigger
+      connector.helper(:hello_world) { 'Hello World!' }
+      connector.helper(:local_hello_world) { 'Hello World!' }
+      trigger.helper(:local_hello_world) { 'Hallo Wereld!' }
+      expect(trigger.helpers.hello_world).to eq('Hello World!')
+      expect(trigger.helpers.local_hello_world).to eq('Hallo Wereld!')
     end
 
     it 'should execute the helper' do

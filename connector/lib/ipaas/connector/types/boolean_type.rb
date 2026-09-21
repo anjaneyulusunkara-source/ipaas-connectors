@@ -14,11 +14,10 @@ module IPaaS
             ActiveModel::Type::Boolean.new.cast(resolved_value)
           end
 
-          # rubocop:disable Naming/PredicateMethod
+          # rubocop:disable-next Naming/PredicateMethod
           def example(_field)
             true
           end
-          # rubocop:enable Naming/PredicateMethod
         end
       end
     end

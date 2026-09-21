@@ -2,6 +2,7 @@ require 'webmock/rspec'
 WebMock.disable_net_connect!(allow_localhost: true)
 
 require 'simplecov'
+SimpleCov.start
 require 'timecop'
 
 ENV['IPAAS_ENV'] = 'test'

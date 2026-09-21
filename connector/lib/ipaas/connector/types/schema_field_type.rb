@@ -53,7 +53,7 @@ module IPaaS
               field :id, 'Field ID', :string,
                     required: true,
                     sample: 'given_name',
-                    max_length: 40
+                    max_length: IPaaS::Connector::Schema::Field::MAX_ID_LENGTH
 
               field :label, 'Label', :string,
                     required: true,

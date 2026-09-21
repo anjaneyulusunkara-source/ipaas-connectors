@@ -66,8 +66,8 @@ describe IPaaS::Job::Context do
     end
 
     it 'consults an ambient logger installed after an earlier default-routed call' do
-      # Guards the @default_logger split: an earlier default-routed call must not pin
-      # the default into @logger and shadow an ambient logger installed afterwards.
+      # An earlier default-routed call must not pin the default into @logger, which would
+      # shadow an ambient logger installed afterwards.
       expect_any_instance_of(Logger).to receive(:info).with('before window')
       context.log('before window')
 

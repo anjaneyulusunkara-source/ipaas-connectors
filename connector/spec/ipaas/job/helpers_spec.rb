@@ -219,11 +219,12 @@ describe IPaaS::Job::Helpers do
       expect(context.keys_to_field_id(input)).to eq(expected)
     end
 
-    it 'truncates keys to 40 characters' do
-      long_key = 'a_very_long_key_name_that_exceeds_forty_characters_total'
+    it 'truncates keys to the maximum field id length' do
+      long_key = "a_very_long_key_name_that_exceeds_the_limit_#{'x' * 40}"
       result = context.keys_to_field_id({ long_key => 'val' })
 
-      expect(result.keys.first.to_s.length).to be <= 40
+      expect(long_key.length).to be > IPaaS::Connector::Schema::Field::MAX_ID_LENGTH
+      expect(result.keys.first.to_s.length).to eq(IPaaS::Connector::Schema::Field::MAX_ID_LENGTH)
     end
 
     it 'squeezes consecutive underscores' do

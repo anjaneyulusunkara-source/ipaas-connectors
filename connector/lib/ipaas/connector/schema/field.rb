@@ -7,12 +7,14 @@ module IPaaS
         proc_safe :type, :'type=', :array, :'array=', :disabled, :'disabled=',
                   :label, :'label=', :hint, :'hint=', :required, :'required=',
                   :visibility, :'visibility=', :enumeration, :'enumeration=', :fields, :default,
-                  :min_date, :'min_date=', :max_date, :'max_date='
+                  :min_date, :'min_date=', :max_date, :'max_date=', :options
 
         ANY_TYPE_PATTERN = /\Aany_[a-z_]+_type\z/
+        REQUIRED_OPTION_DEPENDENCY_PARAMETER_KINDS = [:keyreq].freeze
+        OPTION_DEPENDENCY_PARAMETER_KINDS = (REQUIRED_OPTION_DEPENDENCY_PARAMETER_KINDS + [:key]).freeze
         ENUMERABLE_TYPES = [:string, :integer, :time_zone].freeze
-        NOTICE_TYPES = %w[info error].freeze
-        NOTICE_ACTIONS = %w[edit_connection].freeze
+        NOTICE_TYPES = IPaaS.make_shareable(%w[info error])
+        NOTICE_ACTIONS = IPaaS.make_shareable(%w[edit_connection])
         SERIALIZABLE_ATTRS = [
           :id, :label, :type, :disabled, :array, :default, :sample, :hint, :notice, :notice_type, :notice_action,
           :visibility, :required, :pattern, :min, :max, :min_length, :max_length, :min_date, :max_date, :enumeration,
@@ -22,7 +24,9 @@ module IPaaS
         include IPaaS::Connector::Common::Model
         include ActiveModel::Validations::Callbacks
 
-        attribute :id, length: { in: 1..40 }, type: Symbol, required: true
+        MAX_ID_LENGTH = 64
+
+        attribute :id, length: { in: 1..MAX_ID_LENGTH }, type: Symbol, required: true
         attribute :label, length: { in: 1..120 }, required: true
         attribute :type, type: Symbol, required: true
         attribute :disabled, type: Boolean
@@ -44,11 +48,25 @@ module IPaaS
         attribute :max_date, type: String
         attribute :enumeration, type: [Hash]
         attribute :remove_unmapped_fields, type: Boolean, default: true
-
         # TODO: Add support for custom validation message, e.g. failure_message('My custom message')
         function :validator
+        function :options
 
         schema_fields
+
+        def option_dependencies
+          option_parameter_names(OPTION_DEPENDENCY_PARAMETER_KINDS)
+        end
+
+        def required_option_dependencies
+          option_parameter_names(REQUIRED_OPTION_DEPENDENCY_PARAMETER_KINDS)
+        end
+
+        def options_for(context, **)
+          return unless options
+
+          IPaaS::Connector::Common::ProcHelper.new(context, options).execute(**)
+        end
 
         def fields_with_nested_schema(new_fields = nil)
           return self.fields = new_fields if new_fields
@@ -59,6 +77,9 @@ module IPaaS
         alias fields_without_nested_schema fields
         alias fields fields_with_nested_schema
 
+        validate :options_type_valid?
+        validate :options_parameters_valid?
+        validate :nested_options_valid?
         validate :enumeration_valid?
         validate :visibility_valid?
         validate :notice_type_valid?
@@ -150,7 +171,7 @@ module IPaaS
         alias eql? ==
 
         def field_definition(field_id)
-          fields&.compact&.detect { |f| f.id.to_s == field_id.to_s }
+          Array(fields).compact.detect { |f| f.try(:id).to_s == field_id.to_s }
         end
 
         def unloadable_values?
@@ -182,7 +203,21 @@ module IPaaS
           IPaaS::Connector::Common::Serializer.to_h(self, *attributes)
         end
 
+        protected
+
+        def descendant_option_field_ids
+          Array(fields_without_nested_schema).grep(Field).flat_map do |child|
+            (child.options ? [child.id] : []) + child.descendant_option_field_ids
+          end
+        end
+
         private
+
+        def option_parameter_names(kinds)
+          return [] unless options
+
+          options.parameters.filter_map { |kind, name| name if kinds.include?(kind) }
+        end
 
         def keep_as_is?(value)
           value.nil? || !type_def.respond_to?(:resolve) ||
@@ -202,6 +237,34 @@ module IPaaS
           return false unless self.type.in?(ENUMERABLE_TYPES)
 
           !IPaaS::Connector::Common::UnresolvedNode.within?(self.enumeration)
+        end
+
+        def nested_options_valid?
+          return unless self.array
+
+          offenders = descendant_option_field_ids
+          return if offenders.empty?
+
+          errors.add(:fields, 'cannot provide dynamic options inside an array field, so ' \
+                              "#{offenders.join(', ')} must drop the options block.")
+        end
+
+        def options_type_valid?
+          return if options.blank? || self.type.in?(ENUMERABLE_TYPES)
+
+          errors.add(:options, 'are restricted to string, integer, and time zone types.')
+        end
+
+        def options_parameters_valid?
+          return unless options
+
+          unsupported = options.parameters.filter_map do |kind, name|
+            name unless OPTION_DEPENDENCY_PARAMETER_KINDS.include?(kind)
+          end
+          return if unsupported.empty?
+
+          errors.add(:options, 'must declare every dependency as a keyword parameter, so ' \
+                               "#{unsupported.join(', ')} cannot be used. Write |name:| instead of |name|.")
         end
 
         def enumeration_valid?

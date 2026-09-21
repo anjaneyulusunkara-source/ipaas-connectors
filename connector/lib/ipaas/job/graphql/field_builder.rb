@@ -4,6 +4,10 @@ module IPaaS
       module FieldBuilder
         extend IPaaS::Connector::Common::ProcRules::ProcSafe
 
+        INCLUDE_SUB_FIELDS_SUFFIX = '_fields'.freeze
+        MAX_INCLUDE_FIELD_NAME_LENGTH =
+          IPaaS::Connector::Schema::Field::MAX_ID_LENGTH - INCLUDE_SUB_FIELDS_SUFFIX.length
+
         proc_safe :gql_add_dynamic_fields, :gql_add_dynamic_input_fields,
                   :gql_build_order_subfields, :gql_update_include_fields_input,
                   :gql_collect_dynamic_descriptors, :gql_restore_fields_from_descriptors
@@ -97,7 +101,8 @@ module IPaaS
             include_fields = include_data&.[](:include_fields)
             return {} unless include_fields.is_a?(Hash)
 
-            sub = include_fields[:"#{field_name}_fields"] || include_fields["#{field_name}_fields"]
+            sub_key = "#{field_name}#{INCLUDE_SUB_FIELDS_SUFFIX}"
+            sub = include_fields[sub_key.to_sym] || include_fields[sub_key]
             sub.is_a?(Hash) ? { include_fields: sub } : {}
           end
 
@@ -193,7 +198,7 @@ module IPaaS
             sub_types = find_sub_types_with_nested(ctx[:schema_data], ctx[:type_names], field_name)
             return if sub_types.empty?
 
-            fields_key = :"#{field_name}_fields"
+            fields_key = :"#{field_name}#{INCLUDE_SUB_FIELDS_SUFFIX}"
             container.field fields_key, "#{opt[:label]} fields", :nested
             sub_values = values[fields_key].is_a?(Hash) ? values[fields_key] : {}
             populate_include_booleans(container.field(fields_key), ctx[:schema_data], sub_types,
@@ -221,7 +226,7 @@ module IPaaS
           def nested_field_option(gql_field)
             field_name = gql_field['name']
             return if Schema.gql_skip_field?(gql_field)
-            return if field_name.length > 40
+            return if field_name.length > MAX_INCLUDE_FIELD_NAME_LENGTH
 
             type_info = Schema.gql_unwrap_type(gql_field['type'])
             return unless Schema.gql_to_ipaas_type(type_info) == :nested
@@ -326,7 +331,8 @@ module IPaaS
 
           def add_input_field(target, schema_data, input_field, depth, input_ctx)
             field_name = input_field['name']
-            return if field_name == 'clientMutationId' || field_name.length > 40
+            return if field_name == 'clientMutationId' ||
+                      field_name.length > IPaaS::Connector::Schema::Field::MAX_ID_LENGTH
 
             type_info = Schema.gql_unwrap_type(input_field['type'])
             ipaas_type = Schema.gql_to_ipaas_type(type_info)

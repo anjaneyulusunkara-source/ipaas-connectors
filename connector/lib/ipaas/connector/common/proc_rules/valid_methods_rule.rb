@@ -333,18 +333,22 @@ module IPaaS
             :value,
           ]).freeze
 
+          # Methods dispatching a *positional* symbol as a method name; extend when allowlisting
+          # another. The block-pass channel needs no list: validate_block_pass_symbols covers every method.
+          REFLECTIVE_METHODS = Set[:reduce, :inject].freeze
+
           def initialize(...)
             super
             @reported_methods = []
+            @reflective_reported = []
+            @block_pass_reported = false
           end
 
           def on_send(node)
             parent, method_name, *params = *node
 
-            # block-pass with symbol are also method calls like `[].each(&:foo)`
-            params.select { |param| param.type == :block_pass }.map { |n| n.children.first }.each do |child|
-              validate_method(child.children.first) if child.type == :sym
-            end
+            validate_block_pass_symbols(params)
+            validate_reflective_dispatch(node, method_name, params) if REFLECTIVE_METHODS.include?(method_name)
 
             # helpers.<anything> is accepted when called from the top level
             return if top_level_helper?(parent)
@@ -365,6 +369,50 @@ module IPaaS
           end
 
           private
+
+          def validate_block_pass_symbols(params)
+            params.select { |param| param.type == :block_pass }.map { |n| n.children.first }.each do |child|
+              next validate_method(child.children.first) if child&.type == :sym
+
+              report_unreadable_block_pass
+            end
+          end
+
+          def report_unreadable_block_pass
+            return if @block_pass_reported
+
+            @block_pass_reported = true
+            on_invalid.call('Block argument must be a literal symbol.')
+          end
+
+          def validate_reflective_dispatch(node, method_name, params)
+            arguments = params.reject { |param| param.type == :block_pass }
+            return if arguments.empty?
+            return report_reflective_dispatch(method_name) if splatted?(arguments)
+
+            last_argument = arguments.last
+            return validate_method(last_argument.children.first) if last_argument.type == :sym
+            return if seed_form?(arguments, node, params)
+
+            report_reflective_dispatch(method_name)
+          end
+
+          def splatted?(arguments)
+            arguments.any? { |argument| argument.type == :splat }
+          end
+
+          # Ruby reads a lone argument as the seed whenever a block follows, literal or block-pass;
+          # only at two arguments does it dispatch a positional symbol as a method name.
+          def seed_form?(arguments, node, params)
+            arguments.one? && (node.block_node || params.any? { |param| param.type == :block_pass })
+          end
+
+          def report_reflective_dispatch(method_name)
+            return if @reflective_reported.include?(method_name)
+
+            @reflective_reported << method_name
+            on_invalid.call("Method name argument to '#{method_name}' must be a literal symbol.")
+          end
 
           def top_level_helper?(parent)
             parent&.type == :send && parent&.children == [nil, :helpers]

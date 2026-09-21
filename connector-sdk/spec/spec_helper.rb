@@ -9,6 +9,7 @@ Dir[File.expand_path(File.join(File.dirname(__FILE__), 'support', '**', '*.rb'))
 ENV['IPAAS_ENV'] = 'test'
 
 require 'simplecov'
+SimpleCov.start
 
 RSpec.configure do |config|
   config.after(:suite) do

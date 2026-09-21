@@ -37,6 +37,7 @@ module IPaaS
       validate :trigger_valid?
       validate :actions_valid?
       validate :runbook_variables_valid?
+      validate :action_references_unique
 
       class << self
         def parse(runbook, resolve: true, tolerant: false)
@@ -205,20 +206,24 @@ module IPaaS
         actions.each do |action|
           validate_action(action)
           next if action.valid?
-          errors.add(:actions, "(#{action.reference}) invalid: #{action.full_error_messages}")
+          errors.add(:actions, "(#{action_label(action)}) invalid: #{action.full_error_messages}")
         end
       end
 
       def validate_unreachable_actions
-        return if actions.blank?
         return unless trigger&.successor
 
-        reachable_references = Set.new(ordered_reachable_actions.map(&:reference))
-        unreachable_actions = actions.reject { |action| reachable_references.include?(action.reference) }
-
         unreachable_actions.each do |action|
-          errors.add(:base, "Action (#{action.reference}) is unreachable")
+          errors.add(:base, "Action (#{action_label(action)}) is unreachable")
         end
+      end
+
+      def unreachable_actions(reachable_actions = ordered_reachable_actions)
+        return [] if actions.blank?
+
+        reachable = Set.new.compare_by_identity
+        reachable_actions.each { |action| reachable.add(action) }
+        actions.reject { |action| reachable.include?(action) }
       end
 
       def ordered_reachable_actions
@@ -235,7 +240,35 @@ module IPaaS
         trigger&.successor || actions&.find { |action| action.predecessor_action_reference.nil? }
       end
 
+      def duplicate_action_reference
+        return if actions.blank?
+        action_reference_tally.find { |_reference, count| count > 1 }&.first
+      end
+
+      def duplicate_action_reference?
+        return false if actions.blank?
+        action_reference_tally.any? { |_reference, count| count > 1 }
+      end
+
+      def duplicate_reference_actions
+        return [] unless duplicate_action_reference?
+        reference = duplicate_action_reference
+        actions.select { |action| action.reference.presence == reference }
+      end
+
+      def duplicate_reference_action_labels
+        duplicate_reference_actions.filter_map { |action| action.description.presence }
+      end
+
       private
+
+      def action_reference_tally
+        actions.map { |action| action.reference.presence }.tally
+      end
+
+      def action_label(action)
+        action.reference.presence || 'unnamed'
+      end
 
       def update_actions_runbook_variable(id_was, new_id)
         actions.each do |action|
@@ -320,16 +353,15 @@ module IPaaS
       end
 
       def traverse_chain(action, sorted, lookup, children_by_parent, visited)
-        while action
+        while action && visited.add?(action.reference)
           append_action_and_nested(action, sorted, lookup, children_by_parent, visited)
           action = action.successor
         end
       end
 
       def append_action_and_nested(action, sorted, lookup, children_by_parent, visited)
-        return if visited.include?(action.reference)
-        visited.add(action.reference)
-        sorted << lookup[action.reference]
+        resolved = lookup[action.reference]
+        sorted << resolved if resolved
 
         return unless action.nested?
 
@@ -432,6 +464,23 @@ module IPaaS
         return unless duplicate
 
         errors.add(:runbook_variables, "Runbook variable '#{duplicate}' is defined more than once")
+      end
+
+      def action_references_unique
+        return unless duplicate_action_reference?
+        errors.add(:base, duplicate_action_reference_message)
+      end
+
+      def duplicate_action_reference_message
+        reference = duplicate_action_reference
+        message = if reference.blank?
+                    'More than one action has a blank reference'
+                  else
+                    "Action reference '#{reference}' is used by more than one action"
+                  end
+        labels = duplicate_reference_action_labels
+        return message if labels.empty?
+        "#{message}: #{labels.join(', ')}"
       end
     end
   end

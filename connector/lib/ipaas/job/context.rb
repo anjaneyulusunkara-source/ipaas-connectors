@@ -114,33 +114,17 @@ module IPaaS
 
         private
 
-        # Precedence: explicit per-instance logger > ambient sink > process default.
-        # The ambient logger is re-read each call so it is never stale-memoized;
-        # the default is memoized in a separate ivar so falling back to it never populates
-        # @logger and thus never shadows an ambient logger installed afterwards.
+        # Precedence: explicit per-instance logger > ambient sink > process default. The ambient
+        # logger is re-read each call so it is never stale-memoized, and falling back to the
+        # default never populates @logger, so it cannot shadow an ambient logger installed later.
         def logger
-          @logger || IPaaS::Job::Context.ambient_logger || (@default_logger ||= build_default_logger)
-        end
-
-        def build_default_logger
-          if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-            Rails.logger
-          elsif IPaaS.env == 'test'
-            test_logger
-          else
-            Logger.new($stdout)
-          end
+          @logger || IPaaS::Job::Context.ambient_logger || IPaaS.default_logger
         end
 
         def interpolate(message, interpolation)
           return message unless interpolation
 
           message % interpolation.symbolize_keys
-        end
-
-        def test_logger
-          FileUtils.mkdir_p('log')
-          Logger.new('log/test.log')
         end
 
         def job_context_identifier_store

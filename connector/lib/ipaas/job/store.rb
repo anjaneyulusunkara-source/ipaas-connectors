@@ -7,9 +7,8 @@ module IPaaS
       proc_safe :store, :read, :write
 
       # Not a StandardError to ensure these fundamental exceptions are not swallowed by standard error handlers.
-      # rubocop:disable Lint/InheritException
+      # rubocop:disable-next Lint/InheritException
       class UnresolvableStoreScope < Exception; end
-      # rubocop:enable Lint/InheritException
 
       included do
         def self.store_for(_, namespace: nil)

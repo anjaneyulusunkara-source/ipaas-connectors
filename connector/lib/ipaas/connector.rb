@@ -32,6 +32,32 @@ module IPaaS
       end
       'tmp/solutions'
     end
+
+    # Where a component logs when nothing more specific is configured: the host's logger when
+    # there is one, a file under test so log output stays out of the spec results, stdout
+    # otherwise. Callers wanting a request-scoped sink resolve that themselves first.
+    def default_logger
+      return Rails.logger if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+
+      @default_logger ||= env == 'test' ? test_logger : Logger.new($stdout)
+    end
+
+    # Deeply immutable, for a constant whose value is shared for the life of the process and so
+    # must not be modifiable by anything that runs later. Raises on a value it cannot make
+    # immutable, such as a lock, or a proc whose self or captured objects are not shareable.
+    # All procs it accepts are isolated but it does not freeze them, so those still need freezing before passing.
+    # @param value [Object] the value a constant is about to be bound to (any contained procs should already be frozen)
+    # @return [Object] that same value, made deeply immutable
+    def make_shareable(value)
+      Ractor.make_shareable(value)
+    end
+
+    private
+
+    def test_logger
+      FileUtils.mkdir_p('log')
+      Logger.new('log/test.log')
+    end
   end
 end
 
@@ -49,6 +75,7 @@ require 'ipaas/connector/common/model'
 require 'ipaas/connector/common/uuid_mixin'
 require 'ipaas/connector/common/source_lines'
 require 'ipaas/connector/common/solution_file_cache'
+require 'ipaas/connector/common/yaml_limits'
 require 'ipaas/connector/common/proc_rules/proc_rule'
 require 'ipaas/connector/common/proc_rules/no_const_def_rule'
 require 'ipaas/connector/common/proc_rules/no_global_access_rule'
@@ -58,9 +85,12 @@ require 'ipaas/connector/common/proc_rules/no_exec_rule'
 require 'ipaas/connector/common/proc_rules/no_rescue_exception_rule'
 require 'ipaas/connector/common/proc_rules/valid_methods_rule'
 require 'ipaas/connector/common/proc_rules/node_validator'
+require 'ipaas/connector/common/load_rules/connector_shape'
+require 'ipaas/connector/common/source_parser'
 require 'ipaas/connector/common/proc_container'
 require 'ipaas/connector/common/proc_helper'
 require 'ipaas/connector/common/helpers'
+require 'ipaas/connector/common/helpers_proxy'
 require 'ipaas/connector/common/unresolved_node'
 require 'ipaas/encryption/secret_string' # Serializer permits it, so it must load first
 require 'ipaas/connector/common/serializer'

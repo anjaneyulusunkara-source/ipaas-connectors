@@ -23,6 +23,68 @@ describe IPaaS::Connector::Schema do
     end
   end
 
+  describe 'field_definition' do
+    # A partly unresolved schema leaves nils and UnresolvedNodes among the fields. Five presenters
+    # and the YAML helper look fields up through here, so a hole must answer nil, not raise.
+    let(:unresolved) { IPaaS::Connector::Common::UnresolvedNode.new(String, 'unresolved') }
+
+    before(:each) do
+      schema.field :space_id, 'Space', :string
+      schema.fields = [nil, unresolved, *schema.fields]
+    end
+
+    it 'finds a field past a nil hole and an unresolved node' do
+      expect(schema.field_definition(:space_id).label).to eq('Space')
+    end
+
+    it 'answers nil for an id no field carries, rather than raising on the holes' do
+      expect(schema.field_definition(:nope)).to be_nil
+    end
+
+    it 'answers nil when the schema has no fields at all' do
+      schema.fields = nil
+
+      expect(schema.field_definition(:space_id)).to be_nil
+    end
+  end
+
+  describe 'option dependencies' do
+    before(:each) do
+      skip_function_capture_validation
+    end
+
+    it 'accepts an options block whose keywords name sibling fields' do
+      schema.field :space_id, 'Space', :string
+      schema.field :list_id, 'List', :string do
+        options { |space_id:| [space_id] }
+      end
+
+      expect(schema).to be_valid
+    end
+
+    it 'rejects an options block whose keyword names no sibling field' do
+      schema.field :space_id, 'Space', :string
+      schema.field :list_id, 'List', :string do
+        options { |space_ids:| [space_ids] }
+      end
+
+      expect(schema).not_to be_valid
+      expect(schema.errors[:base]).to include('Field (list_id) options depend on unknown field(s): space_ids')
+    end
+
+    it 'rejects an options block whose dependency is missing its colon' do
+      schema.field :space_id, 'Space', :string
+      schema.field :list_id, 'List', :string do
+        options { |space_id| [space_id] }
+      end
+
+      expect(schema).not_to be_valid
+      expect(schema.errors[:base].join).to include(
+        'Field (list_id) invalid: Options must declare every dependency as a keyword parameter'
+      )
+    end
+  end
+
   describe 'functions' do
     before(:each) do
       skip_function_capture_validation

@@ -120,9 +120,15 @@ module IPaaS
             end
 
             validate do |record|
-              Array(record._fields).each do |f|
-                next unless f.is_a?(IPaaS::Connector::Schema::Field)
+              schema_fields = Array(record._fields).grep(IPaaS::Connector::Schema::Field)
+              field_ids = schema_fields.map(&:id)
+              schema_fields.each do |f|
                 self.errors.add(:base, "Field (#{f.id}) invalid: #{f.full_error_messages}") unless f.valid?
+
+                unknown = f.option_dependencies - field_ids
+                next if unknown.empty?
+
+                self.errors.add(:base, "Field (#{f.id}) options depend on unknown field(s): #{unknown.join(', ')}")
               end
             end
           end
